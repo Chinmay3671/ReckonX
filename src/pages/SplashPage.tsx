@@ -38,7 +38,7 @@ export const SplashPage: React.FC = () => {
             <div className="w-14 h-14 bg-blue-700 rounded-md flex items-center justify-center mx-auto mb-3 text-white">
               <Compass className="w-8 h-8" />
             </div>
-            <h1 className="text-xl font-bold text-slate-900">IDR Navigation</h1>
+            <h1 className="text-xl font-bold text-slate-900">ReckonX Navigation</h1>
             <p className="text-xs text-slate-500 mt-1">Checking Phone Sensors</p>
           </div>
 

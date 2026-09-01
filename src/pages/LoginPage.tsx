@@ -25,7 +25,7 @@ export const LoginPage: React.FC = () => {
         <div className="w-6 h-6 bg-blue-700 rounded flex items-center justify-center text-white">
           <Compass className="w-4 h-4" />
         </div>
-        <span className="font-bold text-slate-900 text-base">IDR Navigation</span>
+        <span className="font-bold text-slate-900 text-base">ReckonX Navigation</span>
       </div>
       <span className="text-xs text-slate-400 font-mono">v2.4</span>
     </div>

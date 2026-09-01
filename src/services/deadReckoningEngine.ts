@@ -3,7 +3,20 @@ export interface DRPositionEstimate {
   velocitySpeedKmH: number;
   driftErrorMeters: number;
   headingDeg: number;
+  isZuptActive?: boolean;
 }
+
+export interface SyntheticIMUData {
+  ax: number;
+  ay: number;
+  az: number;
+  gx: number;
+  gy: number;
+  gz: number;
+}
+
+// Internal ZUPT (Zero Velocity Update) stationary timer accumulator
+let zuptStationaryDurationSec = 0;
 
 export const DeadReckoningEngine = {
   /**
@@ -54,10 +67,44 @@ export const DeadReckoningEngine = {
   },
 
   /**
+   * Zero Velocity Update (ZUPT) Filter Algorithm:
+   * Suppresses integration drift when vehicle is stationary (|a| < 0.25 m/s² for > 0.5 sec)
+   */
+  checkZuptStationary(accelMS2: number, deltaTimeSec: number): boolean {
+    const absAccel = Math.abs(accelMS2);
+    if (absAccel < 0.25) {
+      zuptStationaryDurationSec += deltaTimeSec;
+    } else {
+      zuptStationaryDurationSec = 0;
+    }
+    return zuptStationaryDurationSec >= 0.5;
+  },
+
+  /**
+   * Generate synthetic desktop IMU sensor data when running on PC without physical sensors
+   */
+  generateSyntheticDesktopIMU(speedKmH: number): SyntheticIMUData {
+    const noiseX = (Math.random() - 0.5) * 0.03;
+    const noiseY = (Math.random() - 0.5) * 0.03;
+    const noiseZ = (Math.random() - 0.5) * 0.02;
+
+    const baseAccelX = speedKmH > 2 ? 0.15 + noiseX : noiseX;
+    const baseAccelY = noiseY;
+    const baseAccelZ = 9.80 + noiseZ;
+
+    return {
+      ax: Math.round(baseAccelX * 100) / 100,
+      ay: Math.round(baseAccelY * 100) / 100,
+      az: Math.round(baseAccelZ * 100) / 100,
+      gx: Math.round((Math.random() - 0.5) * 0.5 * 10) / 10,
+      gy: Math.round((Math.random() - 0.5) * 0.5 * 10) / 10,
+      gz: Math.round((Math.random() - 0.5) * 1.0 * 10) / 10,
+    };
+  },
+
+  /**
    * Integrate IMU linear acceleration & heading vector to project Dead Reckoning step:
-   * v_new = v_prev + a * dt
-   * pos_new = pos_prev + v * dt * bearing
-   * drift_new = drift_prev + sigma * dt
+   * Includes ZUPT stationary drift suppression.
    */
   stepKinematics(
     prevPos: [number, number],
@@ -67,9 +114,11 @@ export const DeadReckoningEngine = {
     deltaTimeSec: number,
     accumulatedDrift: number
   ): DRPositionEstimate {
+    const isStationary = DeadReckoningEngine.checkZuptStationary(accelMS2, deltaTimeSec);
+
     // Convert speed to m/s
-    const speedMS = (currentSpeedKmH * 1000) / 3600;
-    const newSpeedMS = Math.max(0, speedMS + accelMS2 * deltaTimeSec);
+    const speedMS = isStationary ? 0 : (currentSpeedKmH * 1000) / 3600;
+    const newSpeedMS = isStationary ? 0 : Math.max(0, speedMS + accelMS2 * deltaTimeSec);
     const newSpeedKmH = (newSpeedMS * 3600) / 1000;
 
     // Calculate displacement in meters
@@ -89,14 +138,16 @@ export const DeadReckoningEngine = {
       prevPos[1] + deltaLng,
     ];
 
-    // Accumulate sensor drift error (sigma = 0.05 meters per second)
-    const newDrift = accumulatedDrift + 0.05 * deltaTimeSec;
+    // Accumulate sensor drift error (suppressed during ZUPT stationary state)
+    const driftIncrement = isStationary ? 0 : 0.05 * deltaTimeSec;
+    const newDrift = accumulatedDrift + driftIncrement;
 
     return {
       position: newPos,
       velocitySpeedKmH: Math.round(newSpeedKmH * 10) / 10,
       driftErrorMeters: Math.round(newDrift * 100) / 100,
       headingDeg,
+      isZuptActive: isStationary,
     };
   },
 };

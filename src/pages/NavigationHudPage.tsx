@@ -13,84 +13,214 @@ import {
   CheckCircle2,
   Radio,
   Play,
+  RotateCw,
+  Wifi,
+  WifiOff,
+  Database,
+  Layers,
 } from 'lucide-react';
 import { MobileShell } from '../components/MobileShell';
 import { DeadReckoningEngine } from '../services/deadReckoningEngine';
+import { OrientationService } from '../services/OrientationService';
+import { SensorService } from '../services/sensorService';
+import type { OperationalMatrixScenario } from '../types/navigation';
 
 const LiveMetricsOverlay: React.FC<{
   remainingKm: number;
   drDrift: number;
   trackingMode: 'live' | 'simulation';
+  liveHeading: number;
+  cameraMode: 'north-up' | 'head-up';
   onToggleTrackingMode: () => void;
-}> = ({ remainingKm, drDrift, trackingMode, onToggleTrackingMode }) => {
+  onToggleCameraMode: () => void;
+}> = ({
+  remainingKm,
+  drDrift,
+  trackingMode,
+  liveHeading,
+  cameraMode,
+  onToggleTrackingMode,
+  onToggleCameraMode,
+}) => {
   const navigate = useNavigate();
-  const { telemetry } = useNavigationContext();
+  const { telemetry, isOnline, matrixScenario, cachedTilesCount, setMatrixScenario } =
+    useNavigationContext();
   const [showExitModal, setShowExitModal] = useState(false);
+  const [showScenarioMenu, setShowScenarioMenu] = useState(false);
+
+  const formattedHeading = OrientationService.formatCardinalHeading(liveHeading);
+
+  const scenarioBadges: Record<
+    OperationalMatrixScenario,
+    { label: string; bg: string; border: string; text: string }
+  > = {
+    scenario1: {
+      label: 'Scenario 1: [GPS ON + Net ON] Online Nav',
+      bg: 'bg-emerald-50',
+      border: 'border-emerald-600/40',
+      text: 'text-emerald-800',
+    },
+    scenario2: {
+      label: 'Scenario 2: [GPS OFF + Net ON] Tunnel Mode',
+      bg: 'bg-amber-50',
+      border: 'border-amber-600/40',
+      text: 'text-amber-800',
+    },
+    scenario3: {
+      label: 'Scenario 3: [GPS ON + Net OFF] Offline Satellite',
+      bg: 'bg-blue-50',
+      border: 'border-blue-600/40',
+      text: 'text-blue-800',
+    },
+    scenario4: {
+      label: 'Scenario 4: [GPS OFF + Net OFF] Offline DR',
+      bg: 'bg-purple-50',
+      border: 'border-purple-600/40',
+      text: 'text-purple-800',
+    },
+  };
+
+  const currentBadge = scenarioBadges[matrixScenario];
 
   return (
     <>
-      {/* Automated GNSS Outage / Tracking Mode Bar */}
-      <div className="w-full bg-amber-50 border-b border-amber-600/40 px-3 py-1.5 flex items-center justify-between z-20 relative">
+      {/* 4/4 Operational Matrix Status Bar */}
+      <div
+        className={`w-full ${currentBadge.bg} border-b ${currentBadge.border} px-3 py-1.5 flex items-center justify-between z-20 relative`}
+      >
         <button
-          onClick={() => navigate('/telemetry')}
-          className="flex items-center gap-2 text-xs font-bold text-amber-700 truncate hover:underline"
+          onClick={() => setShowScenarioMenu(!showScenarioMenu)}
+          className={`flex items-center gap-2 text-xs font-bold ${currentBadge.text} truncate hover:underline text-left`}
         >
-          <AlertTriangle className="w-4 h-4 flex-shrink-0 text-amber-600" />
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
           <span className="truncate">
-            ● {trackingMode === 'live' ? 'Live Hardware GPS Active' : 'GNSS Outage Simulation'} (±{drDrift.toFixed(1)} m drift)
+            {currentBadge.label} (±{drDrift.toFixed(1)}m drift)
           </span>
         </button>
 
-        <button
-          onClick={onToggleTrackingMode}
-          className={`text-[10px] font-bold px-2.5 py-1 rounded flex items-center gap-1.5 transition-colors border flex-shrink-0 ml-2 ${
-            trackingMode === 'live'
-              ? 'bg-emerald-600 text-white border-emerald-700'
-              : 'bg-blue-700 text-white border-blue-800'
-          }`}
-        >
-          {trackingMode === 'live' ? (
-            <>
-              <Radio className="w-3 h-3 animate-pulse" />
-              <span>Real GPS Live</span>
-            </>
-          ) : (
-            <>
-              <Play className="w-3 h-3" />
-              <span>Demo Simulation</span>
-            </>
-          )}
-        </button>
-      </div>
-
-      {/* Bottom Docked HUD Panel */}
-      <div className="absolute bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 p-3 space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="flex flex-col">
-            <span className="text-[10px] font-bold text-slate-500 uppercase">Current Speed</span>
-            <span className="text-xl font-bold font-mono text-slate-900 leading-tight">
-              {telemetry.speed} <span className="text-xs font-normal">km/h</span>
-            </span>
+        <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+          {/* Tile Cache Badge */}
+          <div
+            className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-slate-900 text-white font-mono"
+            title="Cached Leaflet Tiles in IndexedDB"
+          >
+            <Database className="w-3 h-3 text-emerald-400" />
+            <span>{cachedTilesCount} Tiles</span>
           </div>
 
+          {/* Tracking Mode Switcher */}
+          <button
+            onClick={onToggleTrackingMode}
+            className={`text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1 transition-colors border ${
+              trackingMode === 'live'
+                ? 'bg-emerald-600 text-white border-emerald-700'
+                : 'bg-blue-700 text-white border-blue-800'
+            }`}
+          >
+            {trackingMode === 'live' ? (
+              <>
+                <Radio className="w-3 h-3 animate-pulse" />
+                <span>Live GPS</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3 h-3" />
+                <span>Simulation</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Operational Scenario Quick Switcher Dropdown Modal */}
+      {showScenarioMenu && (
+        <div className="absolute top-10 left-3 right-3 z-40 bg-white border border-slate-300 rounded-lg shadow-xl p-3 space-y-2">
+          <div className="flex items-center justify-between pb-1 border-b border-slate-100">
+            <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-blue-600" />
+              <span>Select Operational Matrix Scenario</span>
+            </h4>
+            <button
+              onClick={() => setShowScenarioMenu(false)}
+              className="text-xs text-slate-400 hover:text-slate-600 font-bold px-1"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-1.5 text-xs">
+            {(Object.keys(scenarioBadges) as OperationalMatrixScenario[]).map((scen) => (
+              <button
+                key={scen}
+                onClick={() => {
+                  setMatrixScenario(scen);
+                  setShowScenarioMenu(false);
+                }}
+                className={`p-2 rounded border text-left transition-all font-semibold flex items-center justify-between ${
+                  matrixScenario === scen
+                    ? 'bg-blue-50 border-blue-500 text-blue-900 shadow-xs'
+                    : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <span>{scenarioBadges[scen].label}</span>
+                {matrixScenario === scen && (
+                  <CheckCircle2 className="w-4 h-4 text-blue-600 flex-shrink-0 ml-2" />
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Docked HUD Panel */}
+      <div className="absolute bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 p-3 space-y-2.5 shadow-lg">
+        <div className="flex items-center justify-between gap-2">
+          {/* Speedometer & Heading Readout */}
+          <div className="flex flex-col">
+            <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+              Speed & Heading
+            </span>
+            <div className="flex items-baseline gap-2">
+              <span className="text-xl font-bold font-mono text-slate-900 leading-tight">
+                {telemetry.speed} <span className="text-xs font-normal text-slate-500">km/h</span>
+              </span>
+              <span className="text-xs font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 font-mono">
+                {formattedHeading}
+              </span>
+            </div>
+          </div>
+
+          {/* Trip Progress / ETA */}
           <div className="text-center">
             <div className="text-sm font-bold text-slate-900">
               {Math.max(1, Math.round((remainingKm / (telemetry.speed || 50)) * 60))} min
             </div>
-            <div className="text-xs text-slate-500 font-mono mt-0.5">
-              {remainingKm.toFixed(1)} km left • {trackingMode === 'live' ? 'Live GPS' : 'OSRM Demo'}
-            </div>
+            <button
+              onClick={onToggleCameraMode}
+              className="text-[11px] text-slate-500 font-mono mt-0.5 hover:text-blue-600 hover:underline cursor-pointer flex items-center justify-center gap-1"
+              title="Click to toggle camera orientation"
+            >
+              <span>{remainingKm.toFixed(1)} km left</span>
+              <span>•</span>
+              <span>{cameraMode === 'north-up' ? 'North-Up' : 'Head-Up'}</span>
+              {isOnline ? (
+                <Wifi className="w-3 h-3 text-emerald-600" />
+              ) : (
+                <WifiOff className="w-3 h-3 text-red-500" />
+              )}
+            </button>
           </div>
 
+          {/* Exit Button */}
           <button
             onClick={() => setShowExitModal(true)}
-            className="px-3 py-1.5 text-xs font-bold text-red-600 border border-red-600 hover:bg-red-50 rounded-md transition-colors flex items-center gap-1"
+            className="px-3 py-1.5 text-xs font-bold text-red-600 border border-red-600 hover:bg-red-50 rounded-md transition-colors flex items-center gap-1 flex-shrink-0"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span>Exit</span>
           </button>
         </div>
 
+        {/* Post-Trip Summary Simulation Trigger */}
         <button
           onClick={() => navigate('/summary')}
           className="w-full bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-900 font-bold py-2 px-3 rounded-md transition-colors text-xs flex items-center justify-center gap-1.5"
@@ -133,14 +263,14 @@ const LiveMetricsOverlay: React.FC<{
 };
 
 export const NavigationHudPage: React.FC = () => {
-  const { routeState } = useNavigationContext();
+  const { routeState, telemetry } = useNavigationContext();
   const [muted, setMuted] = useState(false);
-  const [northUp, setNorthUp] = useState(true);
+  const [cameraMode, setCameraMode] = useState<'north-up' | 'head-up'>('north-up');
 
   // Tracking Mode: 'live' (Real Hardware GPS) or 'simulation' (Demo Route Step)
   const [trackingMode, setTrackingMode] = useState<'live' | 'simulation'>('live');
 
-  // Navigation Vehicle Positioning
+  // Navigation Vehicle Positioning & Orientation
   const [currentVehiclePos, setCurrentVehiclePos] = useState<[number, number] | null>(
     routeState.startCoords || (routeState.routeCoordinates[0] ?? null)
   );
@@ -152,7 +282,70 @@ export const NavigationHudPage: React.FC = () => {
   const [deadReckoningPath, setDeadReckoningPath] = useState<[number, number][]>([]);
   const [rawInsPath, setRawInsPath] = useState<[number, number][]>([]);
 
+  // Internal Sensor Fusion References (Avoids unneeded component re-renders)
+  const magnetometerHeadingRef = useRef<number | null>(null);
+  const gnssTrackHeadingRef = useRef<number | null>(null);
+  const gyroZRateRef = useRef<number | null>(null);
+  const fusedHeadingRef = useRef<number>(0);
+  const prevVehiclePosRef = useRef<[number, number] | null>(null);
+  const currentVehiclePosRef = useRef<[number, number] | null>(currentVehiclePos);
+
   const routeIndexRef = useRef<number>(0);
+
+  useEffect(() => {
+    currentVehiclePosRef.current = currentVehiclePos;
+  }, [currentVehiclePos]);
+
+  // 1. Hardware Sensor Listeners for Compass & Gyroscope Fusion (Clean lifecycle cleanup)
+  useEffect(() => {
+    const unsubOrientation = OrientationService.subscribeOrientationEvents((heading) => {
+      magnetometerHeadingRef.current = heading;
+    });
+
+    const unsubMotion = SensorService.subscribeMotion((data) => {
+      gyroZRateRef.current = data.az ? (data.az - 9.8) * 5 : 0;
+    });
+
+    return () => {
+      unsubOrientation();
+      unsubMotion();
+    };
+  }, []);
+
+  // 2. Shortest-Path Angular Fusion & 10 Hz Marker Update Ticker
+  useEffect(() => {
+    const dt = 0.1; // 100 ms = 10 Hz ticker
+    const intervalId = setInterval(() => {
+      const prevHeading = fusedHeadingRef.current;
+      const prevPos = prevVehiclePosRef.current;
+      const currPos = currentVehiclePosRef.current;
+
+      let trajBearing: number | null = null;
+      if (prevPos && currPos) {
+        const dist = DeadReckoningEngine.calculateHaversineDistance(prevPos, currPos);
+        if (dist > 0.0005) {
+          trajBearing = OrientationService.calculateBearing(prevPos, currPos);
+        }
+      }
+
+      const fused = OrientationService.fuseHeading({
+        magnetometerHeading: magnetometerHeadingRef.current,
+        gnssTrackBearing: gnssTrackHeadingRef.current,
+        trajectoryBearing: trajBearing,
+        gyroZRate: gyroZRateRef.current,
+        speedKmH: telemetry.speed || 50,
+        isGnssAvailable: trackingMode === 'live',
+        deltaTimeSec: dt,
+        previousHeading: prevHeading,
+      });
+
+      fusedHeadingRef.current = fused;
+      setLiveHeading(fused);
+      prevVehiclePosRef.current = currPos;
+    }, 100);
+
+    return () => clearInterval(intervalId);
+  }, [telemetry.speed, trackingMode]);
 
   // Generate Trajectory Overlay path offsets when routeCoordinates are available
   useEffect(() => {
@@ -182,27 +375,16 @@ export const NavigationHudPage: React.FC = () => {
     if (trackingMode !== 'live') return;
     if (typeof navigator === 'undefined' || !navigator.geolocation) return;
 
-    let prevPos: [number, number] | null = currentVehiclePos;
-
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
         const newPos: [number, number] = [lat, lng];
 
-        if (prevPos) {
-          const dLat = lat - prevPos[0];
-          const dLng = lng - prevPos[1];
-          if (Math.abs(dLat) > 0.00001 || Math.abs(dLng) > 0.00001) {
-            const angleDeg = Math.atan2(dLng, dLat) * (180 / Math.PI);
-            setLiveHeading(angleDeg);
-          }
-        }
-        prevPos = newPos;
         setCurrentVehiclePos(newPos);
 
         if (position.coords.heading != null && !isNaN(position.coords.heading)) {
-          setLiveHeading(position.coords.heading);
+          gnssTrackHeadingRef.current = position.coords.heading;
         }
 
         if (routeState.destCoords) {
@@ -241,12 +423,10 @@ export const NavigationHudPage: React.FC = () => {
       const next = coords[nextIdx];
 
       if (curr && next) {
-        const dLat = next[0] - curr[0];
-        const dLng = next[1] - curr[1];
-        const angleDeg = Math.atan2(dLng, dLat) * (180 / Math.PI);
+        const angleDeg = OrientationService.calculateBearing(curr, next);
+        gnssTrackHeadingRef.current = angleDeg;
 
         setCurrentVehiclePos(curr);
-        setLiveHeading(angleDeg);
 
         const progressRatio = idx / coords.length;
         const totalDist = routeState.distanceKm || 10;
@@ -259,17 +439,24 @@ export const NavigationHudPage: React.FC = () => {
   }, [trackingMode, routeState.routeCoordinates, routeState.distanceKm]);
 
   const topBanner = (
-    <div className="w-full flex items-center gap-3">
-      <div className="w-9 h-9 bg-emerald-600 text-white rounded-md flex items-center justify-center flex-shrink-0">
-        <CornerUpRight className="w-5 h-5" />
+    <div className="w-full flex items-center justify-between">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="w-9 h-9 bg-emerald-600 text-white rounded-md flex items-center justify-center flex-shrink-0">
+          <CornerUpRight className="w-5 h-5" />
+        </div>
+        <div className="min-w-0">
+          <h2 className="text-sm font-bold text-slate-900 leading-tight truncate">
+            {trackingMode === 'live' ? 'Live Hardware GPS Tracking' : 'Route Demo Simulation'}
+          </h2>
+          <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+            {routeState.origin || 'Start'} → {routeState.destination || 'Destination'}
+          </p>
+        </div>
       </div>
-      <div className="min-w-0">
-        <h2 className="text-sm font-bold text-slate-900 leading-tight truncate">
-          {trackingMode === 'live' ? 'Live Hardware GPS Tracking' : 'Route Demo Simulation'}
-        </h2>
-        <p className="text-[11px] text-slate-500 mt-0.5 truncate">
-          {routeState.origin || 'Start'} → {routeState.destination || 'Destination'}
-        </p>
+      <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+        <span className="text-[11px] font-extrabold px-2 py-1 rounded bg-slate-900 text-white font-mono shadow-xs">
+          {OrientationService.formatCardinalHeading(liveHeading)}
+        </span>
       </div>
     </div>
   );
@@ -281,7 +468,7 @@ export const NavigationHudPage: React.FC = () => {
         <div className="w-full h-full pt-14 pb-28">
           <MapView
             mode="navigation"
-            zoom={15}
+            zoom={16}
             showRoute={true}
             startCoords={routeState.startCoords}
             destCoords={routeState.destCoords}
@@ -290,11 +477,16 @@ export const NavigationHudPage: React.FC = () => {
             rawInsPath={rawInsPath}
             liveVehiclePos={currentVehiclePos}
             liveHeading={liveHeading}
+            cameraMode={cameraMode}
+            onToggleCameraMode={() =>
+              setCameraMode((prev) => (prev === 'north-up' ? 'head-up' : 'north-up'))
+            }
           />
         </div>
 
         {/* Floating Right Controls */}
         <div className="absolute right-3 top-16 z-20 flex flex-col gap-2">
+          {/* Audio Mute Toggle */}
           <button
             onClick={() => setMuted(!muted)}
             className={`w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center transition-colors shadow-xs ${
@@ -305,16 +497,22 @@ export const NavigationHudPage: React.FC = () => {
             {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
           </button>
 
+          {/* Compass / Camera Mode Switcher (North-Up vs Head-Up) */}
           <button
-            onClick={() => setNorthUp(!northUp)}
+            onClick={() => setCameraMode((prev) => (prev === 'north-up' ? 'head-up' : 'north-up'))}
             className={`w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center transition-colors shadow-xs ${
-              northUp ? 'text-blue-700' : 'text-slate-500'
+              cameraMode === 'head-up' ? 'text-blue-700 bg-blue-50 border-blue-300' : 'text-slate-600'
             }`}
-            title="Compass Mode"
+            title={`Current Camera: ${cameraMode === 'north-up' ? 'North-Up' : 'Head-Up (Follow Vehicle)'}`}
           >
-            <Compass className="w-4 h-4" />
+            {cameraMode === 'north-up' ? (
+              <Compass className="w-4 h-4" />
+            ) : (
+              <RotateCw className="w-4 h-4 text-blue-700 animate-spin-slow" />
+            )}
           </button>
 
+          {/* Recenter Map Button */}
           <button
             onClick={() => (window as any).__mapRecenter?.()}
             className="w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center text-blue-700 shadow-xs"
@@ -329,8 +527,13 @@ export const NavigationHudPage: React.FC = () => {
           remainingKm={remainingKm}
           drDrift={drDrift}
           trackingMode={trackingMode}
+          liveHeading={liveHeading}
+          cameraMode={cameraMode}
           onToggleTrackingMode={() =>
             setTrackingMode((prev) => (prev === 'live' ? 'simulation' : 'live'))
+          }
+          onToggleCameraMode={() =>
+            setCameraMode((prev) => (prev === 'north-up' ? 'head-up' : 'north-up'))
           }
         />
       </div>

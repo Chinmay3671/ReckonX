@@ -19,10 +19,61 @@ export interface RouteResult {
   isFallback?: boolean;
 }
 
+// In-Memory LRU Cache for Nominatim Search Queries (Limit: 50 items)
+const lruSearchCache = new Map<string, SearchResult[]>();
+const MAX_LRU_SIZE = 50;
+
+// Debounce timer handle for Nominatim API calls
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Offline POI Database Fallback (Scenarios 3 & 4 - Pure Offline Modes)
+const OFFLINE_POI_DATABASE: SearchResult[] = [
+  {
+    display_name: 'Chhatrapati Shivaji Maharaj International Airport (BOM), Mumbai',
+    lat: 19.0896,
+    lon: 72.8656,
+  },
+  {
+    display_name: 'Gateway of India, Colaba, Mumbai, Maharashtra',
+    lat: 18.922,
+    lon: 72.8347,
+  },
+  {
+    display_name: 'Bandra Kurla Complex (BKC), Bandra East, Mumbai',
+    lat: 19.0657,
+    lon: 72.8687,
+  },
+  {
+    display_name: 'Marine Drive, Netaji Subhash Chandra Bose Road, Mumbai',
+    lat: 18.944,
+    lon: 72.823,
+  },
+  {
+    display_name: 'Dadar Central Railway Station, Mumbai',
+    lat: 19.0178,
+    lon: 72.8478,
+  },
+  {
+    display_name: 'Pune Junction Railway Station, Pune, Maharashtra',
+    lat: 18.5289,
+    lon: 73.8744,
+  },
+  {
+    display_name: 'Thane Railway Station, Thane West, Maharashtra',
+    lat: 19.186,
+    lon: 72.9759,
+  },
+  {
+    display_name: 'Navi Mumbai International Airport Site, Panvel',
+    lat: 18.99,
+    lon: 73.078,
+  },
+];
+
 export const LocationService = {
   /**
    * Acquire live current GPS coordinates via HTML5 Geolocation API with high accuracy
-   * and reverse geocode to a human-readable street/city name using Nominatim API.
+   * and reverse geocode to a human-readable street/city name.
    */
   async getCurrentLocation(): Promise<CurrentLocationResult> {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
@@ -67,45 +118,95 @@ export const LocationService = {
   },
 
   /**
-   * Search for locations matching a text query using Nominatim API.
+   * Search for locations using Nominatim API with 400ms debounce and LRU cache.
+   * Fallbacks seamlessly to local POI database if offline or network error.
    */
   async searchLocation(query: string): Promise<SearchResult[]> {
     if (!query || query.trim().length < 2) {
       return [];
     }
 
-    try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-          query.trim()
-        )}&limit=5`,
-        {
-          headers: {
-            'Accept-Language': 'en',
-          },
-        }
-      );
+    const cleanQuery = query.trim().toLowerCase();
 
-      if (!response.ok) {
-        throw new Error(`Nominatim search error: ${response.statusText}`);
+    // 1. Check In-Memory LRU Cache first
+    if (lruSearchCache.has(cleanQuery)) {
+      const cached = lruSearchCache.get(cleanQuery)!;
+      // Refresh key order in LRU cache
+      lruSearchCache.delete(cleanQuery);
+      lruSearchCache.set(cleanQuery, cached);
+      return cached;
+    }
+
+    // 2. Check network connectivity status
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+    if (!isOnline) {
+      return LocationService.searchOfflinePoiDatabase(cleanQuery);
+    }
+
+    // 3. 400ms Debounced Network Call to Nominatim API
+    return new Promise((resolve) => {
+      if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
       }
 
-      const data = await response.json();
-      return (data || []).map((item: any) => ({
-        display_name: item.display_name,
-        lat: parseFloat(item.lat),
-        lon: parseFloat(item.lon),
-      }));
-    } catch (err) {
-      console.warn('LocationService.searchLocation fallback:', err);
-      return [];
-    }
+      searchDebounceTimer = setTimeout(async () => {
+        try {
+          const response = await fetch(
+            `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+              query.trim()
+            )}&limit=5`,
+            {
+              headers: {
+                'Accept-Language': 'en',
+              },
+            }
+          );
+
+          if (!response.ok) {
+            throw new Error(`Nominatim error: ${response.statusText}`);
+          }
+
+          const data = await response.json();
+          const results: SearchResult[] = (data || []).map((item: any) => ({
+            display_name: item.display_name,
+            lat: parseFloat(item.lat),
+            lon: parseFloat(item.lon),
+          }));
+
+          // Store in LRU cache
+          if (lruSearchCache.size >= MAX_LRU_SIZE) {
+            const firstKey = lruSearchCache.keys().next().value;
+            if (firstKey) lruSearchCache.delete(firstKey);
+          }
+          lruSearchCache.set(cleanQuery, results);
+
+          resolve(results);
+        } catch (err) {
+          console.warn('Nominatim API search fallback:', err);
+          resolve(LocationService.searchOfflinePoiDatabase(cleanQuery));
+        }
+      }, 400);
+    });
+  },
+
+  /**
+   * Search local offline POI database for offline scenarios (Scenarios 3 & 4)
+   */
+  searchOfflinePoiDatabase(cleanQuery: string): SearchResult[] {
+    return OFFLINE_POI_DATABASE.filter((poi) =>
+      poi.display_name.toLowerCase().includes(cleanQuery)
+    );
   },
 
   /**
    * Reverse-geocode latitude/longitude coordinates to a street/city address string.
    */
   async reverseGeocode(lat: number, lng: number): Promise<string> {
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+    if (!isOnline) {
+      return `Offline Coordinate (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+    }
+
     try {
       const response = await fetch(
         `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
@@ -132,13 +233,13 @@ export const LocationService = {
   },
 
   /**
-   * Generate Haversine straight-line fallback route if OSRM Public Routing API is unreachable or rate limited.
+   * Generate Haversine straight-line fallback route if OSRM Public Routing API is unreachable or offline.
    */
   generateFallbackRoute(
     start: [number, number],
     dest: [number, number]
   ): RouteResult {
-    const steps = 12;
+    const steps = 15;
     const coordinates: [number, number][] = [];
 
     for (let i = 0; i <= steps; i++) {
@@ -161,12 +262,17 @@ export const LocationService = {
 
   /**
    * Calculate dynamic drivable route polyline, distance (km), and ETA (min) using OSRM Public API.
-   * Automatically falls back to Haversine straight-line route if OSRM is unreachable.
+   * Automatically falls back to Haversine straight-line route if offline or OSRM is unreachable.
    */
   async calculateRoute(
     start: [number, number],
     dest: [number, number]
   ): Promise<RouteResult> {
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+    if (!isOnline) {
+      return LocationService.generateFallbackRoute(start, dest);
+    }
+
     const [startLat, startLng] = start;
     const [destLat, destLng] = dest;
 

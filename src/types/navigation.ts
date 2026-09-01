@@ -1,3 +1,9 @@
+export type OperationalMatrixScenario =
+  | 'scenario1' // [GPS ON + Net ON] — Standard Online Navigation
+  | 'scenario2' // [GPS OFF + Net ON] — GNSS Outage / Tunnel Mode
+  | 'scenario3' // [GPS ON + Net OFF] — Pure Offline Satellite Mode
+  | 'scenario4'; // [GPS OFF + Net OFF] — Pure Offline Dead Reckoning
+
 export interface SensorStatus {
   accel: boolean;
   gyro: boolean;
@@ -69,8 +75,12 @@ export interface NavigationContextType {
   user: UserProfile;
   toast: ToastState;
   isLoggedIn: boolean;
+  isOnline: boolean;
+  matrixScenario: OperationalMatrixScenario;
+  cachedTilesCount: number;
 
   // Actions
+  setMatrixScenario: (scenario: OperationalMatrixScenario) => void;
   calibrateCompass: () => void;
   grantGnssPermission: () => void;
   grantAllSensors: () => void;
@@ -84,6 +94,7 @@ export interface NavigationContextType {
   clearRoute: () => void;
   toggleSetting: (key: keyof SettingsState) => void;
   clearOfflineLogs: () => void;
+  clearTileCache: () => Promise<void>;
   showToast: (msg: string) => void;
   loginUser: () => void;
   logoutUser: () => void;

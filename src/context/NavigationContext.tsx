@@ -7,15 +7,17 @@ import type {
   UserProfile,
   ToastState,
   NavigationContextType,
+  OperationalMatrixScenario,
 } from '../types/navigation';
 import { LocationService } from '../services/locationService';
 import { SensorService } from '../services/sensorService';
+import { TileCacheService } from '../services/tileCacheService';
 
 const initialSensorStatus: SensorStatus = {
   accel: true,
   gyro: true,
-  compass: false,
-  gnss: false,
+  compass: true,
+  gnss: true,
 };
 
 const initialRouteState: RouteState = {
@@ -79,6 +81,65 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [user] = useState<UserProfile>(initialUser);
   const [toast, setToast] = useState<ToastState>({ show: false, message: '' });
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(true);
+
+  // Network Online & Operational Matrix Scenario State
+  const [isOnline, setIsOnline] = useState<boolean>(
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [matrixScenario, setMatrixScenario] = useState<OperationalMatrixScenario>('scenario1');
+  const [cachedTilesCount, setCachedTilesCount] = useState<number>(0);
+
+  // Refresh cached tiles count from IndexedDB
+  const refreshCacheCount = useCallback(async () => {
+    const count = await TileCacheService.getCacheCount();
+    setCachedTilesCount(count);
+  }, []);
+
+  useEffect(() => {
+    refreshCacheCount();
+    const interval = setInterval(refreshCacheCount, 5000);
+    return () => clearInterval(interval);
+  }, [refreshCacheCount]);
+
+  // Window Online / Offline Event Listeners
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleOnline = () => {
+      setIsOnline(true);
+      setToast({ show: true, message: 'Network Restored: Online Mode Active ✓' });
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+      setToast({ show: true, message: 'Network Lost: Offline IndexedDB & DR Active ⚠' });
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Sync matrixScenario with network and GPS state changes
+  useEffect(() => {
+    if (isOnline) {
+      if (sensorStatus.gnss) {
+        setMatrixScenario('scenario1'); // Scenario 1: GPS ON + Net ON
+      } else {
+        setMatrixScenario('scenario2'); // Scenario 2: GPS OFF + Net ON (GNSS Outage)
+      }
+    } else {
+      if (sensorStatus.gnss) {
+        setMatrixScenario('scenario3'); // Scenario 3: GPS ON + Net OFF (Pure Offline Satellite)
+      } else {
+        setMatrixScenario('scenario4'); // Scenario 4: GPS OFF + Net OFF (Pure Offline DR)
+      }
+    }
+  }, [isOnline, sensorStatus.gnss]);
 
   // Keep ref to avoid recreation loops
   const routeStateRef = useRef<RouteState>(routeState);
@@ -347,6 +408,12 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     showToast('Saved offline logs cleared (0 KB) ✓');
   };
 
+  const clearTileCache = async () => {
+    await TileCacheService.clearCache();
+    setCachedTilesCount(0);
+    showToast('IndexedDB tile cache cleared (0 tiles) ✓');
+  };
+
   const loginUser = () => {
     setIsLoggedIn(true);
     showToast('Logged in successfully ✓');
@@ -367,6 +434,10 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         user,
         toast,
         isLoggedIn,
+        isOnline,
+        matrixScenario,
+        cachedTilesCount,
+        setMatrixScenario,
         calibrateCompass,
         grantGnssPermission,
         grantAllSensors,
@@ -380,6 +451,7 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         clearRoute,
         toggleSetting,
         clearOfflineLogs,
+        clearTileCache,
         showToast,
         loginUser,
         logoutUser,

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
+import { TileCacheService } from '../services/tileCacheService';
 
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
@@ -33,17 +34,68 @@ const createDestIcon = () =>
     iconAnchor: [12, 12],
   });
 
+// Dynamic High-Visibility Navigation Chevron Arrow Icon
 const createChevronIcon = (heading: number = 0) =>
   L.divIcon({
     className: 'custom-chevron-icon',
     html: `
-      <div style="width: 32px; height: 32px; background: #2563EB; border: 3px solid #FFFFFF; border-radius: 50%; display: flex; align-items: center; justify-content: center; transform: rotate(${heading}deg); transition: transform 0.1s linear; box-shadow: 0 4px 10px rgba(0,0,0,0.4);">
-        <div style="width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 12px solid #FFFFFF;"></div>
+      <div style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; position: relative;">
+        <!-- Accuracy pulse halo -->
+        <div style="position: absolute; inset: 4px; border-radius: 50%; background: rgba(37, 99, 235, 0.2); border: 1.5px solid rgba(37, 99, 235, 0.4);"></div>
+        <!-- Directional chevron arrow SVG -->
+        <div style="width: 32px; height: 32px; transform: rotate(${heading}deg); transition: transform 0.1s linear; display: flex; align-items: center; justify-content: center; filter: drop-shadow(0px 3px 6px rgba(0,0,0,0.4));">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2L19 21L12 17.5L5 21L12 2Z" fill="#2563EB" stroke="#FFFFFF" stroke-width="2.5" stroke-linejoin="round"/>
+          </svg>
+        </div>
       </div>
     `,
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
+    iconSize: [44, 44],
+    iconAnchor: [22, 22],
   });
+
+// Custom Leaflet TileLayer with IndexedDB Offline Persistence Interceptor
+const IndexedDBTileLayer = L.TileLayer.extend({
+  createTile(coords: L.Coords, done: L.DoneCallback) {
+    const tile = document.createElement('img');
+
+    L.DomEvent.on(tile, 'load', L.Util.bind((this as any)._tileOnLoad, this, done, tile));
+    L.DomEvent.on(tile, 'error', L.Util.bind((this as any)._tileOnError, this, done, tile));
+
+    if (this.options.crossOrigin || this.options.crossOrigin === '') {
+      tile.crossOrigin = this.options.crossOrigin === true ? '' : this.options.crossOrigin;
+    }
+
+    tile.alt = '';
+    tile.setAttribute('role', 'presentation');
+
+    const url = this.getTileUrl(coords);
+
+    // Fetch from IndexedDB cache or network
+    TileCacheService.getTile(url).then((cachedDataUrl) => {
+      if (cachedDataUrl) {
+        tile.src = cachedDataUrl;
+      } else {
+        fetch(url)
+          .then((res) => res.blob())
+          .then((blob) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const dataUrl = reader.result as string;
+              tile.src = dataUrl;
+              TileCacheService.saveTile(url, dataUrl);
+            };
+            reader.readAsDataURL(blob);
+          })
+          .catch(() => {
+            tile.src = url;
+          });
+      }
+    });
+
+    return tile;
+  },
+});
 
 interface MapViewProps {
   mode?: 'explore' | 'navigation' | 'summary';
@@ -57,9 +109,11 @@ interface MapViewProps {
   rawInsPath?: [number, number][];
   liveVehiclePos?: [number, number] | null;
   liveHeading?: number;
+  cameraMode?: 'north-up' | 'head-up';
   isDarkMode?: boolean;
   onMapClick?: (lat: number, lng: number) => void;
   onDestinationDragEnd?: (lat: number, lng: number) => void;
+  onToggleCameraMode?: () => void;
 }
 
 const MapViewComponent: React.FC<MapViewProps> = ({
@@ -74,15 +128,17 @@ const MapViewComponent: React.FC<MapViewProps> = ({
   rawInsPath = [],
   liveVehiclePos = null,
   liveHeading = 0,
+  cameraMode = 'north-up',
   isDarkMode = false,
   onMapClick,
   onDestinationDragEnd,
+  onToggleCameraMode,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
 
-  // Initialize map once with standard OpenStreetMap light tiles
+  // Initialize map once with IndexedDB Cached Tile Layer
   useEffect(() => {
     if (!mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
@@ -96,8 +152,10 @@ const MapViewComponent: React.FC<MapViewProps> = ({
       attributionControl: false,
     });
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    // Attach custom IndexedDB Tile Layer
+    new (IndexedDBTileLayer as any)('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
+      crossOrigin: true,
     }).addTo(map);
 
     const layerGroup = L.layerGroup().addTo(map);
@@ -172,7 +230,6 @@ const MapViewComponent: React.FC<MapViewProps> = ({
     }
 
     // 3. Multi-Trajectory Overlays
-
     // Trajectory A: Primary Fused Road Route (Solid Blue Line)
     if (showRoute && routeCoordinates && routeCoordinates.length > 0) {
       const polyline = L.polyline(routeCoordinates, {
@@ -218,7 +275,7 @@ const MapViewComponent: React.FC<MapViewProps> = ({
       map.fitBounds(L.latLngBounds(bounds), { padding: [50, 50] });
     }
 
-    // 4. Live Vehicle Marker (High-Contrast Blue Indicator at 10 Hz)
+    // 4. Live Vehicle Navigation Chevron Marker
     if (mode === 'navigation') {
       const pos = liveVehiclePos || startCoords;
       if (pos) {
@@ -227,7 +284,7 @@ const MapViewComponent: React.FC<MapViewProps> = ({
           zIndexOffset: 1000,
         }).addTo(layerGroup);
 
-        map.setView(pos, 15, { animate: true });
+        map.setView(pos, 16, { animate: true });
       }
     }
   }, [
@@ -256,7 +313,7 @@ const MapViewComponent: React.FC<MapViewProps> = ({
       if (!map) return;
 
       if (mode === 'navigation' && (liveVehiclePos || startCoords)) {
-        map.setView(liveVehiclePos || startCoords!, 15);
+        map.setView(liveVehiclePos || startCoords!, 16);
       } else if (startCoords && destCoords) {
         map.fitBounds(L.latLngBounds([startCoords, destCoords]), { padding: [40, 40] });
       } else if (startCoords) {
@@ -265,13 +322,34 @@ const MapViewComponent: React.FC<MapViewProps> = ({
     };
   }, [mode, startCoords, destCoords, liveVehiclePos]);
 
+  const mapRotationAngle = cameraMode === 'head-up' ? -liveHeading : 0;
+
   return (
-    <div
-      ref={mapContainerRef}
-      className={`w-full h-full relative z-0 ${
-        isDarkMode ? 'brightness-75 invert contrast-125 hue-rotate-180' : ''
-      }`}
-    />
+    <div className="relative w-full h-full overflow-hidden bg-slate-100">
+      {/* Map Container with CSS Head-Up Rotation */}
+      <div
+        ref={mapContainerRef}
+        className={`w-full h-full relative z-0 transition-transform duration-100 ease-linear ${
+          isDarkMode ? 'brightness-75 invert contrast-125 hue-rotate-180' : ''
+        }`}
+        style={{
+          transform: `rotate(${mapRotationAngle}deg)`,
+          transformOrigin: 'center center',
+        }}
+      />
+
+      {/* Floating Camera Mode Badge / Quick Toggle */}
+      {mode === 'navigation' && onToggleCameraMode && (
+        <button
+          onClick={onToggleCameraMode}
+          className="absolute left-3 top-16 z-20 bg-white/95 backdrop-blur-xs border border-slate-200 shadow-md px-2.5 py-1.5 rounded-full flex items-center gap-1.5 text-xs font-bold text-slate-800 hover:bg-slate-50 transition-all active:scale-95"
+          title="Toggle Camera Orientation Mode"
+        >
+          <div className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
+          <span>{cameraMode === 'north-up' ? 'North-Up' : 'Head-Up (Follow)'}</span>
+        </button>
+      )}
+    </div>
   );
 };
 
