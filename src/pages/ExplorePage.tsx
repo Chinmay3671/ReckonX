@@ -1,147 +1,252 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MapView } from '../components/MapView';
 import { BottomNav } from '../components/BottomNav';
 import { useNavigationContext } from '../context/NavigationContext';
-import { Plus, Minus, Navigation, X, Search, ChevronRight } from 'lucide-react';
+import {
+  Plus,
+  Minus,
+  Navigation,
+  X,
+  Search,
+  ChevronRight,
+  MapPin,
+  Loader2,
+  LocateFixed,
+} from 'lucide-react';
 import { MobileShell } from '../components/MobileShell';
+import { LocationService } from '../services/locationService';
+import type { SearchResult } from '../services/locationService';
 
 export const ExplorePage: React.FC = () => {
   const navigate = useNavigate();
-  const { routeState, setRouteDestination, clearRoute } = useNavigationContext();
+  const {
+    routeState,
+    acquireLiveLocation,
+    setDestCoordsAndAddress,
+    clearRoute,
+  } = useNavigationContext();
 
   const [searchInput, setSearchInput] = useState<string>(routeState.destination || '');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
-  const [selectedFilter, setSelectedFilter] = useState('All India');
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const suggestions = [
-    'Pune Logistics Depot, MH (NH 65 Expressway)',
-    'Mumbai JNPT Port Terminal, MH',
-    'Hyderabad Freight Hub, TS',
-    'Bengaluru Logistics Corridor, KA',
-  ];
+  // Sync search input when route state updates
+  useEffect(() => {
+    if (routeState.destination) {
+      setSearchInput(routeState.destination);
+    }
+  }, [routeState.destination]);
 
-  const handleSelectSuggestion = (item: string) => {
-    setSearchInput(item);
-    setRouteDestination(item);
+  const performSearchAndSelectTop = async (query: string) => {
+    if (!query || query.trim().length < 2) return;
+    setIsSearching(true);
+    try {
+      const results = await LocationService.searchLocation(query);
+      setSearchResults(results);
+      if (results && results.length > 0) {
+        const top = results[0];
+        const coords: [number, number] = [top.lat, top.lon];
+        setSearchInput(top.display_name);
+        await setDestCoordsAndAddress(coords, top.display_name);
+        setShowDropdown(false);
+      }
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // Handle 400ms debounced destination search
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const query = e.target.value;
+    setSearchInput(query);
+    setShowDropdown(true);
+
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    if (!query || query.trim().length < 2) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    searchTimeoutRef.current = setTimeout(async () => {
+      const results = await LocationService.searchLocation(query);
+      setSearchResults(results);
+      setIsSearching(false);
+    }, 400);
+  };
+
+  const handleSelectResult = async (result: SearchResult) => {
+    const coords: [number, number] = [result.lat, result.lon];
+    setSearchInput(result.display_name);
     setShowDropdown(false);
+    await setDestCoordsAndAddress(coords, result.display_name);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      performSearchAndSelectTop(searchInput);
+    }
   };
 
   const handleClearSearch = () => {
     setSearchInput('');
+    setSearchResults([]);
     clearRoute();
+  };
+
+  // Direct Map Tap / Pin Placement handler (Method B)
+  const handleMapClick = async (lat: number, lng: number) => {
+    const address = await LocationService.reverseGeocode(lat, lng);
+    const coords: [number, number] = [lat, lng];
+    setSearchInput(address);
+    await setDestCoordsAndAddress(coords, address);
+  };
+
+  // Draggable Destination Marker handler
+  const handleDestinationDragEnd = async (lat: number, lng: number) => {
+    const address = await LocationService.reverseGeocode(lat, lng);
+    const coords: [number, number] = [lat, lng];
+    setSearchInput(address);
+    await setDestCoordsAndAddress(coords, address);
   };
 
   return (
     <MobileShell footer={<BottomNav />} hideFooterPadding>
       <div className="relative h-full w-full bg-slate-50 overflow-hidden">
-        {/* Top Docked Search Bar (inside map screen) */}
+        {/* Top Search & GPS Trigger Header */}
         <div className="absolute top-0 left-0 right-0 z-20 bg-white border-b border-slate-200 p-3 space-y-2">
-          {/* Search Input Field (Blank by default) */}
-          <div className="flex items-center gap-2 bg-white border border-slate-300 rounded-md px-3 py-2 relative">
-            <Search className="w-4 h-4 text-slate-500 flex-shrink-0" />
+          {/* Search Input Field */}
+          <div className="flex items-center gap-2 bg-white border border-slate-300 rounded-md px-3 py-2 relative shadow-xs">
+            <button onClick={() => performSearchAndSelectTop(searchInput)}>
+              <Search className="w-4 h-4 text-slate-500 hover:text-blue-700 flex-shrink-0" />
+            </button>
             <input
               type="text"
               value={searchInput}
               onFocus={() => setShowDropdown(true)}
-              onChange={(e) => {
-                setSearchInput(e.target.value);
-                if (!e.target.value) clearRoute();
-              }}
-              className="w-full text-xs font-bold text-slate-900 bg-transparent focus:outline-none placeholder:font-normal placeholder:text-slate-400"
-              placeholder="Search destination (e.g. Pune Logistics Depot)..."
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              className="w-full text-xs font-bold text-slate-900 bg-transparent focus:outline-none placeholder:font-normal placeholder:text-slate-400 truncate"
+              placeholder="Search destination (e.g. Pune) or drag red pin..."
             />
-            {searchInput && (
-              <button onClick={handleClearSearch} className="text-slate-500 hover:text-slate-900 p-0.5">
-                <X className="w-3.5 h-3.5" />
-              </button>
+            {isSearching ? (
+              <Loader2 className="w-4 h-4 text-blue-700 animate-spin flex-shrink-0" />
+            ) : (
+              searchInput && (
+                <button
+                  onClick={handleClearSearch}
+                  className="text-slate-400 hover:text-slate-900 p-0.5"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )
             )}
           </div>
 
-          {/* Autocomplete Suggestions Dropdown */}
-          {showDropdown && (
-            <div className="bg-white border border-slate-200 rounded-md divide-y divide-slate-100 py-1 z-30 max-h-44 overflow-y-auto">
-              <div className="px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                Suggested Logistics Hubs
+          {/* Quick GPS Action Button & Status */}
+          <div className="flex items-center justify-between pt-0.5">
+            <button
+              onClick={() => acquireLiveLocation()}
+              disabled={routeState.isAcquiringLocation}
+              className="text-[11px] font-bold text-blue-700 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md border border-blue-200 transition-colors flex items-center gap-1.5"
+            >
+              {routeState.isAcquiringLocation ? (
+                <Loader2 className="w-3 h-3 animate-spin text-blue-700" />
+              ) : (
+                <LocateFixed className="w-3.5 h-3.5 text-blue-700" />
+              )}
+              <span>📍 Use My Current Location</span>
+            </button>
+
+            <span className="text-[10px] text-slate-500 font-medium truncate max-w-[140px]">
+              {routeState.origin ? `Start: ${routeState.origin}` : 'Tap map or drag pin'}
+            </span>
+          </div>
+
+          {/* Search Results Dropdown */}
+          {showDropdown && searchResults.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-md divide-y divide-slate-100 py-1 z-50 max-h-48 overflow-y-auto shadow-xl">
+              <div className="px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50">
+                Select Location Match:
               </div>
-              {suggestions.map((item, idx) => (
+              {searchResults.map((item, idx) => (
                 <button
                   key={idx}
-                  onClick={() => handleSelectSuggestion(item)}
-                  className="w-full text-left px-3 py-2 text-xs font-medium text-slate-900 hover:bg-slate-50 flex items-center gap-2"
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    handleSelectResult(item);
+                  }}
+                  className="w-full text-left px-3 py-2 text-xs font-medium text-slate-900 hover:bg-blue-50 flex items-start gap-2 transition-colors"
                 >
-                  <Search className="w-3.5 h-3.5 text-slate-500" />
-                  <span>{item}</span>
+                  <MapPin className="w-3.5 h-3.5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <span className="line-clamp-2 leading-snug">{item.display_name}</span>
                 </button>
               ))}
             </div>
           )}
-
-          {/* Filter Chips */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pt-0.5 no-scrollbar">
-            {['All India', 'Active NH 65 Route', 'Tunnel Corridors'].map((chip) => {
-              const isSelected = selectedFilter === chip;
-              return (
-                <button
-                  key={chip}
-                  onClick={() => setSelectedFilter(chip)}
-                  className={`text-[11px] font-bold px-2.5 py-1 rounded-full border transition-colors flex-shrink-0 ${
-                    isSelected
-                      ? 'bg-slate-900 text-white border-slate-900'
-                      : 'bg-white text-slate-500 border-slate-200 hover:border-slate-900'
-                  }`}
-                >
-                  [{chip}]
-                </button>
-              );
-            })}
-          </div>
         </div>
 
-        {/* Map Viewport */}
+        {/* Dynamic Leaflet Map Viewport */}
         <div className="w-full h-full pt-28 pb-16">
-          <MapView mode="explore" showRoute={routeState.calculated} />
+          <MapView
+            mode="explore"
+            showRoute={routeState.calculated}
+            startCoords={routeState.startCoords}
+            destCoords={routeState.destCoords}
+            routeCoordinates={routeState.routeCoordinates}
+            onMapClick={handleMapClick}
+            onDestinationDragEnd={handleDestinationDragEnd}
+          />
         </div>
 
-        {/* Floating Map Controls */}
+        {/* Floating Map Control Buttons */}
         <div className="absolute right-3 bottom-20 z-20 flex flex-col gap-2">
           <button
             onClick={() => (window as any).__mapZoomIn?.()}
-            className="w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center text-slate-900 hover:bg-slate-50"
+            className="w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center text-slate-900 hover:bg-slate-50 shadow-xs"
             aria-label="Zoom In"
           >
             <Plus className="w-4 h-4" />
           </button>
           <button
             onClick={() => (window as any).__mapZoomOut?.()}
-            className="w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center text-slate-900 hover:bg-slate-50"
+            className="w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center text-slate-900 hover:bg-slate-50 shadow-xs"
             aria-label="Zoom Out"
           >
             <Minus className="w-4 h-4" />
           </button>
           <button
             onClick={() => (window as any).__mapRecenter?.()}
-            className="w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center text-blue-700 hover:bg-slate-50"
+            className="w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center text-blue-700 hover:bg-slate-50 shadow-xs"
             aria-label="Recenter"
           >
             <Navigation className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Bottom Drawer (Visible ONLY when destination is selected / route calculated) */}
+        {/* Dynamic Bottom Route Card */}
         {routeState.calculated && (
-          <div className="absolute bottom-16 left-0 right-0 z-20 bg-white border-t border-slate-200 p-4">
-            <div className="flex items-center justify-between mb-2">
-              <div>
-                <h3 className="text-xs font-bold text-slate-900">
-                  Route Corridor: Solapur → Pune (NH 65)
+          <div className="absolute bottom-16 left-0 right-0 z-20 bg-white border-t border-slate-200 p-4 shadow-lg space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0 pr-2">
+                <h3 className="text-xs font-bold text-slate-900 truncate">
+                  {routeState.origin || 'Start'} → {routeState.destination || 'Destination'}
                 </h3>
                 <p className="text-[11px] text-slate-500 font-mono mt-0.5">
-                  142.4 km • 1 hr 54 min • 2 Tunnel Sections
+                  {routeState.distance} • {routeState.duration} ETA • OSRM Dynamic Route
                 </p>
               </div>
-              <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-600/20">
-                IMU ACTIVE
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-600/20 flex-shrink-0">
+                GPS ACTIVE
               </span>
             </div>
 
@@ -149,7 +254,7 @@ export const ExplorePage: React.FC = () => {
               onClick={() => navigate('/route-setup')}
               className="w-full bg-blue-700 hover:bg-blue-800 text-white font-bold py-2.5 px-4 rounded-md transition-colors text-xs flex items-center justify-center gap-1.5"
             >
-              <span>Configure Route</span>
+              <span>Configure & Start Route</span>
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>

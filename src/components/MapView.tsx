@@ -12,48 +12,85 @@ const DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-export const SOLAPUR_COORDS: [number, number] = [17.6599, 75.9064];
-export const PUNE_COORDS: [number, number] = [18.5204, 73.8567];
+// Custom Marker Icons
+const createStartIcon = () =>
+  L.divIcon({
+    className: 'custom-start-icon',
+    html: `
+      <div style="width: 22px; height: 22px; background: #059669; border: 3px solid #FFFFFF; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3);"></div>
+    `,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+  });
 
-export const ROUTE_WAYPOINTS: [number, number][] = [
-  [17.6599, 75.9064],
-  [17.8200, 75.4500],
-  [18.0100, 74.9800],
-  [18.1100, 74.5800],
-  [18.1400, 74.4800],
-  [18.2800, 74.1200],
-  [18.4200, 73.9800],
-  [18.5204, 73.8567],
-];
+const createDestIcon = () =>
+  L.divIcon({
+    className: 'custom-dest-icon',
+    html: `
+      <div style="width: 24px; height: 24px; background: #DC2626; border: 3px solid #FFFFFF; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.4); cursor: grab;"></div>
+    `,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+  });
 
-export const TUNNEL_WAYPOINTS: [number, number][] = [
-  [18.1100, 74.5800],
-  [18.1250, 74.5300],
-  [18.1400, 74.4800],
-];
+const createChevronIcon = (heading: number = 0) =>
+  L.divIcon({
+    className: 'custom-chevron-icon',
+    html: `
+      <div style="width: 32px; height: 32px; background: #2563EB; border: 3px solid #FFFFFF; border-radius: 50%; display: flex; align-items: center; justify-content: center; transform: rotate(${heading}deg); transition: transform 0.1s linear; box-shadow: 0 4px 10px rgba(0,0,0,0.4);">
+        <div style="width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 12px solid #FFFFFF;"></div>
+      </div>
+    `,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+  });
 
 interface MapViewProps {
   mode?: 'explore' | 'navigation' | 'summary';
   center?: [number, number];
   zoom?: number;
   showRoute?: boolean;
+  startCoords?: [number, number] | null;
+  destCoords?: [number, number] | null;
+  routeCoordinates?: [number, number][];
+  deadReckoningPath?: [number, number][];
+  rawInsPath?: [number, number][];
+  liveVehiclePos?: [number, number] | null;
+  liveHeading?: number;
+  isDarkMode?: boolean;
+  onMapClick?: (lat: number, lng: number) => void;
+  onDestinationDragEnd?: (lat: number, lng: number) => void;
 }
 
 const MapViewComponent: React.FC<MapViewProps> = ({
   mode = 'explore',
-  center = [18.1000, 74.8000],
-  zoom = 9,
+  center = [19.0760, 72.8777],
+  zoom = 10,
   showRoute = true,
+  startCoords = null,
+  destCoords = null,
+  routeCoordinates = [],
+  deadReckoningPath = [],
+  rawInsPath = [],
+  liveVehiclePos = null,
+  liveHeading = 0,
+  isDarkMode = false,
+  onMapClick,
+  onDestinationDragEnd,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
+  const layerGroupRef = useRef<L.LayerGroup | null>(null);
 
+  // Initialize map once with standard OpenStreetMap light tiles
   useEffect(() => {
     if (!mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
 
+    const initialCenter = startCoords || center;
+
     const map = L.map(mapContainerRef.current, {
-      center: center,
+      center: initialCenter,
       zoom: zoom,
       zoomControl: false,
       attributionControl: false,
@@ -63,82 +100,150 @@ const MapViewComponent: React.FC<MapViewProps> = ({
       maxZoom: 19,
     }).addTo(map);
 
-    const solapurIcon = L.divIcon({
-      className: 'custom-solapur-icon',
-      html: `
-        <div style="width: 18px; height: 18px; background: #1D4ED8; border: 2.5px solid #FFFFFF; border-radius: 50%;"></div>
-      `,
-      iconSize: [18, 18],
-      iconAnchor: [9, 9],
-    });
-
-    const destinationIcon = L.divIcon({
-      className: 'custom-dest-icon',
-      html: `
-        <div style="width: 18px; height: 18px; background: #DC2626; border: 2.5px solid #FFFFFF; border-radius: 50%;"></div>
-      `,
-      iconSize: [18, 18],
-      iconAnchor: [9, 9],
-    });
-
-    const chevronIcon = L.divIcon({
-      className: 'custom-chevron-icon',
-      html: `
-        <div style="width: 28px; height: 28px; background: #1D4ED8; border: 2.5px solid #FFFFFF; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
-          <div style="width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 10px solid #FFFFFF;"></div>
-        </div>
-      `,
-      iconSize: [28, 28],
-      iconAnchor: [14, 14],
-    });
-
-    L.marker(SOLAPUR_COORDS, { icon: solapurIcon })
-      .addTo(map)
-      .bindPopup('<b>Solapur Operations Hub</b>');
-
-    L.marker(PUNE_COORDS, { icon: destinationIcon })
-      .addTo(map)
-      .bindPopup('<b>Pune Logistics Depot</b>');
-
-    if (showRoute) {
-      const segment1: [number, number][] = ROUTE_WAYPOINTS.slice(0, 4);
-      L.polyline(segment1, {
-        color: mode === 'summary' ? '#16A34A' : '#1D4ED8',
-        weight: 5,
-        opacity: 0.9,
-      }).addTo(map);
-
-      L.polyline(TUNNEL_WAYPOINTS, {
-        color: '#D97706',
-        weight: 5,
-        dashArray: '8, 8',
-        opacity: 1,
-      }).addTo(map);
-
-      const segment2: [number, number][] = ROUTE_WAYPOINTS.slice(4);
-      L.polyline(segment2, {
-        color: mode === 'summary' ? '#16A34A' : '#1D4ED8',
-        weight: 5,
-        opacity: 0.9,
-      }).addTo(map);
-    }
-
-    if (mode === 'navigation') {
-      const liveVehiclePos: [number, number] = [18.1200, 74.5500];
-      L.marker(liveVehiclePos, { icon: chevronIcon }).addTo(map);
-      map.setView(liveVehiclePos, 13);
-    }
-
+    const layerGroup = L.layerGroup().addTo(map);
+    layerGroupRef.current = layerGroup;
     mapInstanceRef.current = map;
 
     return () => {
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
+        layerGroupRef.current = null;
       }
     };
   }, []);
 
+  // Map click listener
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    const handleMapClick = (e: L.LeafletMouseEvent) => {
+      if (onMapClick) {
+        onMapClick(e.latlng.lat, e.latlng.lng);
+      }
+    };
+
+    map.on('click', handleMapClick);
+    return () => {
+      map.off('click', handleMapClick);
+    };
+  }, [onMapClick]);
+
+  // Reactive layer updates (Markers, Multi-Trajectories & Navigation Vehicle)
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const layerGroup = layerGroupRef.current;
+    if (!map || !layerGroup) return;
+
+    layerGroup.clearLayers();
+
+    const bounds: [number, number][] = [];
+
+    // 1. Start Marker (Green Circle)
+    if (startCoords) {
+      L.marker(startCoords, { icon: createStartIcon() })
+        .bindPopup('<b>Start / Live GPS</b>')
+        .addTo(layerGroup);
+      bounds.push(startCoords);
+      if (mode === 'explore' && !destCoords && !routeCoordinates.length) {
+        map.setView(startCoords, 13);
+      }
+    }
+
+    // 2. Destination Marker (Red Circle - Draggable)
+    if (destCoords) {
+      const destMarker = L.marker(destCoords, {
+        icon: createDestIcon(),
+        draggable: true,
+      })
+        .bindPopup('<b>Destination (Drag to Reposition)</b>')
+        .addTo(layerGroup);
+
+      if (onDestinationDragEnd) {
+        destMarker.on('dragend', (event: L.DragEndEvent) => {
+          const target = event.target as L.Marker;
+          const pos = target.getLatLng();
+          onDestinationDragEnd(pos.lat, pos.lng);
+        });
+      }
+
+      bounds.push(destCoords);
+    }
+
+    // 3. Multi-Trajectory Overlays
+
+    // Trajectory A: Primary Fused Road Route (Solid Blue Line)
+    if (showRoute && routeCoordinates && routeCoordinates.length > 0) {
+      const polyline = L.polyline(routeCoordinates, {
+        color: mode === 'summary' ? '#16A34A' : '#2563EB',
+        weight: 6,
+        opacity: 0.9,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(layerGroup);
+
+      if (mode !== 'navigation') {
+        try {
+          map.fitBounds(polyline.getBounds(), { padding: [40, 40] });
+        } catch {
+          // Fallback for zero bounds
+        }
+      }
+    }
+
+    // Trajectory B: AI Dead Reckoning Path (Amber Dashed Line)
+    if (deadReckoningPath && deadReckoningPath.length > 0) {
+      L.polyline(deadReckoningPath, {
+        color: '#CA8A04',
+        weight: 4,
+        dashArray: '8, 8',
+        opacity: 0.95,
+        lineCap: 'round',
+      }).addTo(layerGroup);
+    }
+
+    // Trajectory C: Raw INS Drift Path (Red Transparent Line)
+    if (rawInsPath && rawInsPath.length > 0) {
+      L.polyline(rawInsPath, {
+        color: '#DC2626',
+        weight: 3,
+        dashArray: '4, 4',
+        opacity: 0.5,
+        lineCap: 'round',
+      }).addTo(layerGroup);
+    }
+
+    if (bounds.length === 2 && mode !== 'navigation' && (!routeCoordinates || routeCoordinates.length === 0)) {
+      map.fitBounds(L.latLngBounds(bounds), { padding: [50, 50] });
+    }
+
+    // 4. Live Vehicle Marker (High-Contrast Blue Indicator at 10 Hz)
+    if (mode === 'navigation') {
+      const pos = liveVehiclePos || startCoords;
+      if (pos) {
+        L.marker(pos, {
+          icon: createChevronIcon(liveHeading),
+          zIndexOffset: 1000,
+        }).addTo(layerGroup);
+
+        map.setView(pos, 15, { animate: true });
+      }
+    }
+  }, [
+    mode,
+    startCoords,
+    destCoords,
+    routeCoordinates,
+    deadReckoningPath,
+    rawInsPath,
+    showRoute,
+    liveVehiclePos,
+    liveHeading,
+    onDestinationDragEnd,
+  ]);
+
+  // Map control helper functions
   useEffect(() => {
     (window as any).__mapZoomIn = () => {
       if (mapInstanceRef.current) mapInstanceRef.current.zoomIn();
@@ -147,20 +252,27 @@ const MapViewComponent: React.FC<MapViewProps> = ({
       if (mapInstanceRef.current) mapInstanceRef.current.zoomOut();
     };
     (window as any).__mapRecenter = () => {
-      if (mapInstanceRef.current) {
-        if (mode === 'navigation') {
-          mapInstanceRef.current.setView([18.1200, 74.5500], 13);
-        } else {
-          mapInstanceRef.current.fitBounds(L.latLngBounds(SOLAPUR_COORDS, PUNE_COORDS), {
-            padding: [40, 40],
-          });
-        }
+      const map = mapInstanceRef.current;
+      if (!map) return;
+
+      if (mode === 'navigation' && (liveVehiclePos || startCoords)) {
+        map.setView(liveVehiclePos || startCoords!, 15);
+      } else if (startCoords && destCoords) {
+        map.fitBounds(L.latLngBounds([startCoords, destCoords]), { padding: [40, 40] });
+      } else if (startCoords) {
+        map.setView(startCoords, 13);
       }
     };
-  }, [mode]);
+  }, [mode, startCoords, destCoords, liveVehiclePos]);
 
-  return <div ref={mapContainerRef} className="w-full h-full relative z-0" />;
+  return (
+    <div
+      ref={mapContainerRef}
+      className={`w-full h-full relative z-0 ${
+        isDarkMode ? 'brightness-75 invert contrast-125 hue-rotate-180' : ''
+      }`}
+    />
+  );
 };
 
-// Memoize component to prevent unneeded Leaflet re-renders and map flickering
 export const MapView = React.memo(MapViewComponent);

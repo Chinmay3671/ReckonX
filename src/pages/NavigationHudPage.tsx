@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MapView } from '../components/MapView';
 import { useNavigationContext } from '../context/NavigationContext';
@@ -11,32 +11,57 @@ import {
   AlertTriangle,
   LogOut,
   CheckCircle2,
+  Radio,
+  Play,
 } from 'lucide-react';
 import { MobileShell } from '../components/MobileShell';
+import { DeadReckoningEngine } from '../services/deadReckoningEngine';
 
-// Separate Child Component for dynamic speed & drift overlay to prevent map re-renders
-const LiveMetricsOverlay: React.FC = () => {
+const LiveMetricsOverlay: React.FC<{
+  remainingKm: number;
+  drDrift: number;
+  trackingMode: 'live' | 'simulation';
+  onToggleTrackingMode: () => void;
+}> = ({ remainingKm, drDrift, trackingMode, onToggleTrackingMode }) => {
   const navigate = useNavigate();
   const { telemetry } = useNavigationContext();
   const [showExitModal, setShowExitModal] = useState(false);
 
   return (
     <>
-      {/* Automated Alert Strip */}
-      <button
-        onClick={() => navigate('/telemetry')}
-        className="w-full bg-amber-50 border-b border-amber-600/40 px-3 py-1.5 text-left flex items-center justify-between hover:bg-amber-100 transition-colors"
-      >
-        <div className="flex items-center gap-2 text-xs font-bold text-amber-600 truncate">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+      {/* Automated GNSS Outage / Tracking Mode Bar */}
+      <div className="w-full bg-amber-50 border-b border-amber-600/40 px-3 py-1.5 flex items-center justify-between z-20 relative">
+        <button
+          onClick={() => navigate('/telemetry')}
+          className="flex items-center gap-2 text-xs font-bold text-amber-700 truncate hover:underline"
+        >
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 text-amber-600" />
           <span className="truncate">
-            ● GPS Lost in Tunnel • Motion Sensor Navigation Active (±{telemetry.drift} m drift)
+            ● {trackingMode === 'live' ? 'Live Hardware GPS Active' : 'GNSS Outage Simulation'} (±{drDrift.toFixed(1)} m drift)
           </span>
-        </div>
-        <span className="text-[10px] font-bold text-blue-700 bg-white border border-blue-700/30 px-2 py-0.5 rounded flex-shrink-0 ml-2">
-          VIEW STREAM →
-        </span>
-      </button>
+        </button>
+
+        <button
+          onClick={onToggleTrackingMode}
+          className={`text-[10px] font-bold px-2.5 py-1 rounded flex items-center gap-1.5 transition-colors border flex-shrink-0 ml-2 ${
+            trackingMode === 'live'
+              ? 'bg-emerald-600 text-white border-emerald-700'
+              : 'bg-blue-700 text-white border-blue-800'
+          }`}
+        >
+          {trackingMode === 'live' ? (
+            <>
+              <Radio className="w-3 h-3 animate-pulse" />
+              <span>Real GPS Live</span>
+            </>
+          ) : (
+            <>
+              <Play className="w-3 h-3" />
+              <span>Demo Simulation</span>
+            </>
+          )}
+        </button>
+      </div>
 
       {/* Bottom Docked HUD Panel */}
       <div className="absolute bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 p-3 space-y-2">
@@ -49,9 +74,11 @@ const LiveMetricsOverlay: React.FC = () => {
           </div>
 
           <div className="text-center">
-            <div className="text-sm font-bold text-slate-900">1 hr 12 min</div>
+            <div className="text-sm font-bold text-slate-900">
+              {Math.max(1, Math.round((remainingKm / (telemetry.speed || 50)) * 60))} min
+            </div>
             <div className="text-xs text-slate-500 font-mono mt-0.5">
-              {telemetry.remainingKm} km left • {telemetry.eta} ETA
+              {remainingKm.toFixed(1)} km left • {trackingMode === 'live' ? 'Live GPS' : 'OSRM Demo'}
             </div>
           </div>
 
@@ -106,8 +133,130 @@ const LiveMetricsOverlay: React.FC = () => {
 };
 
 export const NavigationHudPage: React.FC = () => {
+  const { routeState } = useNavigationContext();
   const [muted, setMuted] = useState(false);
   const [northUp, setNorthUp] = useState(true);
+
+  // Tracking Mode: 'live' (Real Hardware GPS) or 'simulation' (Demo Route Step)
+  const [trackingMode, setTrackingMode] = useState<'live' | 'simulation'>('live');
+
+  // Navigation Vehicle Positioning
+  const [currentVehiclePos, setCurrentVehiclePos] = useState<[number, number] | null>(
+    routeState.startCoords || (routeState.routeCoordinates[0] ?? null)
+  );
+  const [liveHeading, setLiveHeading] = useState<number>(0);
+  const [remainingKm, setRemainingKm] = useState<number>(routeState.distanceKm || 0);
+  const [drDrift, setDrDrift] = useState<number>(0.4);
+
+  // Multi-Trajectory Overlays State
+  const [deadReckoningPath, setDeadReckoningPath] = useState<[number, number][]>([]);
+  const [rawInsPath, setRawInsPath] = useState<[number, number][]>([]);
+
+  const routeIndexRef = useRef<number>(0);
+
+  // Generate Trajectory Overlay path offsets when routeCoordinates are available
+  useEffect(() => {
+    const coords = routeState.routeCoordinates;
+    if (!coords || coords.length === 0) return;
+
+    // AI Dead Reckoning Path (Amber dashed line with slight IMU bias)
+    const drPath: [number, number][] = coords.map(([lat, lng], i) => {
+      const offsetLat = Math.sin(i * 0.2) * 0.0003;
+      const offsetLng = Math.cos(i * 0.2) * 0.0003;
+      return [lat + offsetLat, lng + offsetLng];
+    });
+
+    // Raw INS Drift Path (Red transparent line with raw un-filtered drift error)
+    const insPath: [number, number][] = coords.map(([lat, lng], i) => {
+      const offsetLat = (i * 0.00008) + Math.sin(i * 0.3) * 0.0005;
+      const offsetLng = (i * 0.00008) + Math.cos(i * 0.3) * 0.0005;
+      return [lat + offsetLat, lng + offsetLng];
+    });
+
+    setDeadReckoningPath(drPath);
+    setRawInsPath(insPath);
+  }, [routeState.routeCoordinates]);
+
+  // Real Hardware GPS Tracking Mode (`navigator.geolocation.watchPosition`)
+  useEffect(() => {
+    if (trackingMode !== 'live') return;
+    if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+
+    let prevPos: [number, number] | null = currentVehiclePos;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        const newPos: [number, number] = [lat, lng];
+
+        if (prevPos) {
+          const dLat = lat - prevPos[0];
+          const dLng = lng - prevPos[1];
+          if (Math.abs(dLat) > 0.00001 || Math.abs(dLng) > 0.00001) {
+            const angleDeg = Math.atan2(dLng, dLat) * (180 / Math.PI);
+            setLiveHeading(angleDeg);
+          }
+        }
+        prevPos = newPos;
+        setCurrentVehiclePos(newPos);
+
+        if (position.coords.heading != null && !isNaN(position.coords.heading)) {
+          setLiveHeading(position.coords.heading);
+        }
+
+        if (routeState.destCoords) {
+          const dist = DeadReckoningEngine.calculateHaversineDistance(newPos, routeState.destCoords);
+          setRemainingKm(dist);
+        }
+      },
+      (error) => {
+        console.warn('Real GPS Watch error:', error);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 1000,
+        timeout: 10000,
+      }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [trackingMode, routeState.destCoords]);
+
+  // Demo Simulation Mode (Only runs when explicitly switched to 'simulation')
+  useEffect(() => {
+    if (trackingMode !== 'simulation') return;
+
+    const coords = routeState.routeCoordinates;
+    if (!coords || coords.length === 0) return;
+
+    const interval = setInterval(() => {
+      routeIndexRef.current = (routeIndexRef.current + 0.1) % coords.length;
+      const idx = Math.floor(routeIndexRef.current);
+      const nextIdx = (idx + 1) % coords.length;
+
+      const curr = coords[idx];
+      const next = coords[nextIdx];
+
+      if (curr && next) {
+        const dLat = next[0] - curr[0];
+        const dLng = next[1] - curr[1];
+        const angleDeg = Math.atan2(dLng, dLat) * (180 / Math.PI);
+
+        setCurrentVehiclePos(curr);
+        setLiveHeading(angleDeg);
+
+        const progressRatio = idx / coords.length;
+        const totalDist = routeState.distanceKm || 10;
+        setRemainingKm(Math.max(0, totalDist * (1 - progressRatio)));
+        setDrDrift(0.4 + Math.sin(routeIndexRef.current) * 0.3);
+      }
+    }, 150);
+
+    return () => clearInterval(interval);
+  }, [trackingMode, routeState.routeCoordinates, routeState.distanceKm]);
 
   const topBanner = (
     <div className="w-full flex items-center gap-3">
@@ -116,10 +265,10 @@ export const NavigationHudPage: React.FC = () => {
       </div>
       <div className="min-w-0">
         <h2 className="text-sm font-bold text-slate-900 leading-tight truncate">
-          In 300 m turn right into Expressway Tunnel
+          {trackingMode === 'live' ? 'Live Hardware GPS Tracking' : 'Route Demo Simulation'}
         </h2>
         <p className="text-[11px] text-slate-500 mt-0.5 truncate">
-          Then stay straight for 3.4 km on NH 65
+          {routeState.origin || 'Start'} → {routeState.destination || 'Destination'}
         </p>
       </div>
     </div>
@@ -128,16 +277,27 @@ export const NavigationHudPage: React.FC = () => {
   return (
     <MobileShell header={topBanner} hideHeaderPadding hideFooterPadding>
       <div className="relative h-full w-full bg-slate-50 overflow-hidden">
-        {/* Isolated Map Viewport (85% height) */}
+        {/* Map Viewport rendering multi-trajectory overlays & live vehicle position */}
         <div className="w-full h-full pt-14 pb-28">
-          <MapView mode="navigation" zoom={13} />
+          <MapView
+            mode="navigation"
+            zoom={15}
+            showRoute={true}
+            startCoords={routeState.startCoords}
+            destCoords={routeState.destCoords}
+            routeCoordinates={routeState.routeCoordinates}
+            deadReckoningPath={deadReckoningPath}
+            rawInsPath={rawInsPath}
+            liveVehiclePos={currentVehiclePos}
+            liveHeading={liveHeading}
+          />
         </div>
 
         {/* Floating Right Controls */}
         <div className="absolute right-3 top-16 z-20 flex flex-col gap-2">
           <button
             onClick={() => setMuted(!muted)}
-            className={`w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center transition-colors ${
+            className={`w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center transition-colors shadow-xs ${
               muted ? 'text-red-600' : 'text-slate-900'
             }`}
             title="Toggle Mute"
@@ -147,7 +307,7 @@ export const NavigationHudPage: React.FC = () => {
 
           <button
             onClick={() => setNorthUp(!northUp)}
-            className={`w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center transition-colors ${
+            className={`w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center transition-colors shadow-xs ${
               northUp ? 'text-blue-700' : 'text-slate-500'
             }`}
             title="Compass Mode"
@@ -157,15 +317,22 @@ export const NavigationHudPage: React.FC = () => {
 
           <button
             onClick={() => (window as any).__mapRecenter?.()}
-            className="w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center text-blue-700"
+            className="w-9 h-9 bg-white border border-slate-200 rounded-md flex items-center justify-center text-blue-700 shadow-xs"
             title="Recenter Vehicle"
           >
             <NavigationIcon className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Isolated Live Metrics Overlay */}
-        <LiveMetricsOverlay />
+        {/* Live Metrics HUD Overlay */}
+        <LiveMetricsOverlay
+          remainingKm={remainingKm}
+          drDrift={drDrift}
+          trackingMode={trackingMode}
+          onToggleTrackingMode={() =>
+            setTrackingMode((prev) => (prev === 'live' ? 'simulation' : 'live'))
+          }
+        />
       </div>
     </MobileShell>
   );

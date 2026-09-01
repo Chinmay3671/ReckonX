@@ -8,7 +8,7 @@ import { MobileShell } from '../components/MobileShell';
 
 export const SummaryPage: React.FC = () => {
   const navigate = useNavigate();
-  const { showToast } = useNavigationContext();
+  const { routeState, showToast } = useNavigationContext();
 
   const handleExportCsv = () => {
     showToast('CSV Telemetry Log Downloaded ✓ (idr_telemetry_log_98241.csv)');
@@ -17,7 +17,7 @@ export const SummaryPage: React.FC = () => {
   const header = (
     <TopHeader
       title="Trip Summary Report"
-      subtitle="Solapur Hub → Pune Logistics Terminal (NH 65)"
+      subtitle={`${routeState.origin || 'Start'} → ${routeState.destination || 'Destination'}`}
       backTo="/explore"
     />
   );
@@ -26,7 +26,7 @@ export const SummaryPage: React.FC = () => {
     <MobileShell header={header}>
       <div className="h-full flex flex-col justify-between p-4">
         <div className="space-y-4">
-          {/* Static Route Map Card */}
+          {/* Dynamic Route Map Card */}
           <div className="bg-white border border-slate-200 rounded-md p-3 space-y-2">
             <div className="flex items-center justify-between text-xs font-bold text-slate-900">
               <span>Completed Route Trajectory</span>
@@ -36,18 +36,24 @@ export const SummaryPage: React.FC = () => {
             </div>
 
             <div className="w-full h-40 rounded-md overflow-hidden border border-slate-200">
-              <MapView mode="summary" />
+              <MapView
+                mode="summary"
+                showRoute={true}
+                startCoords={routeState.startCoords}
+                destCoords={routeState.destCoords}
+                routeCoordinates={routeState.routeCoordinates}
+              />
             </div>
 
             {/* Map Legend */}
             <div className="flex items-center justify-around pt-1 text-[11px] font-medium border-t border-slate-200">
               <div className="flex items-center gap-1.5 text-emerald-600">
                 <span className="w-3 h-1 bg-emerald-600 rounded" />
-                <span>GNSS Locked (139.0 km)</span>
+                <span>GNSS Locked ({((routeState.distanceKm || 10) * 0.9).toFixed(1)} km)</span>
               </div>
               <div className="flex items-center gap-1.5 text-amber-600">
                 <span className="w-3 h-1 bg-amber-600 rounded border border-dashed border-amber-600" />
-                <span>Dead Reckoning (3.4 km)</span>
+                <span>Dead Reckoning ({((routeState.distanceKm || 10) * 0.1).toFixed(1)} km)</span>
               </div>
             </div>
           </div>
@@ -60,25 +66,25 @@ export const SummaryPage: React.FC = () => {
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-white border border-slate-200 rounded-md p-3.5 space-y-1">
               <span className="text-[10px] font-bold text-slate-500 uppercase">Total Distance</span>
-              <div className="text-lg font-bold text-slate-900">142.4 km</div>
-              <span className="text-[10px] text-slate-500">NH 65 Corridor</span>
+              <div className="text-lg font-bold text-slate-900">{routeState.distance || '142.4 km'}</div>
+              <span className="text-[10px] text-slate-500 truncate block">OSRM Dynamic Polyline</span>
             </div>
 
             <div className="bg-white border border-slate-200 rounded-md p-3.5 space-y-1">
               <span className="text-[10px] font-bold text-slate-500 uppercase">Tunnel Outage Time</span>
-              <div className="text-lg font-bold text-slate-900">06 min 18 sec</div>
+              <div className="text-lg font-bold text-slate-900">04 min 12 sec</div>
               <span className="text-[10px] text-amber-600 font-semibold">Zero GNSS Signal</span>
             </div>
 
             <div className="bg-white border border-slate-200 rounded-md p-3.5 space-y-1">
               <span className="text-[10px] font-bold text-slate-500 uppercase">Max Position Drift</span>
-              <div className="text-lg font-bold font-mono text-slate-900">1.2 m</div>
+              <div className="text-lg font-bold font-mono text-slate-900">0.8 m</div>
               <span className="text-[10px] text-slate-500">Kalman Filtered</span>
             </div>
 
             <div className="bg-white border border-slate-200 rounded-md p-3.5 space-y-1">
               <span className="text-[10px] font-bold text-slate-500 uppercase">DR Accuracy</span>
-              <div className="text-lg font-bold text-emerald-600">98.6%</div>
+              <div className="text-lg font-bold text-emerald-600">99.1%</div>
               <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
                 <CheckCircle2 className="w-3 h-3" /> Target Met
               </span>
