@@ -10,8 +10,13 @@ import type {
   OperationalMatrixScenario,
   SensorEventLogEntry,
   ActiveTrackingSession,
+  VehicleType,
+  CurrentLocationData,
+  RealSensorData,
+  SystemDataMode,
 } from '../types/navigation';
 import { LocationService } from '../services/locationService';
+import { RouteService } from '../services/routeService';
 import { SensorService } from '../services/sensorService';
 import { TileCacheService } from '../services/tileCacheService';
 import { LogExportService } from '../services/logExportService';
@@ -49,6 +54,43 @@ const initialSensorStatus: SensorStatus = {
   gnss: false,
   hasMotionHardware: typeof window !== 'undefined' ? SensorService.hasMotionSupport() : false,
   hasOrientationHardware: typeof window !== 'undefined' ? SensorService.hasOrientationSupport() : false,
+  sensorsEnabled: true,
+  gpsPermission: 'prompt',
+};
+
+const initialCurrentLocation: CurrentLocationData = {
+  latitude: null,
+  longitude: null,
+  accuracy: null,
+  altitude: null,
+  speed: null,
+  bearing: null,
+  timestamp: null,
+  address: 'Acquiring GPS fix...',
+  source: 'gps',
+  isStale: true,
+  ageSec: 0,
+};
+
+const initialRealSensors: RealSensorData = {
+  ax: 0,
+  ay: 0,
+  az: 0,
+  accelMag: 0,
+  gx: 0,
+  gy: 0,
+  gz: 0,
+  gyroMag: 0,
+  alpha: null,
+  beta: null,
+  gamma: null,
+  headingDeg: null,
+  magX: null,
+  magY: null,
+  magZ: null,
+  timestamp: null,
+  intervalMs: 16,
+  sampleRateHz: 0,
 };
 
 const initialRouteState: RouteState = {
@@ -56,6 +98,7 @@ const initialRouteState: RouteState = {
   destination: '',
   startCoords: null,
   destCoords: null,
+  vehicleType: 'car',
   routes: [],
   selectedRouteIndex: 0,
   routeCoordinates: [],
@@ -66,6 +109,7 @@ const initialRouteState: RouteState = {
   durationMin: 0,
   tunnelLength: '0 km',
   via: 'OSRM Driving Route',
+  routeType: 'Normal Road Route',
   steps: [],
   isCalculating: false,
   isAcquiringLocation: false,
@@ -116,6 +160,12 @@ const initialTrackingSession: ActiveTrackingSession = {
 const NavigationContext = createContext<NavigationContextType | undefined>(undefined);
 
 export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // Central Data Sources
+  const [currentLocation, setCurrentLocation] = useState<CurrentLocationData>(initialCurrentLocation);
+  const [realSensors, setRealSensors] = useState<RealSensorData>(initialRealSensors);
+  const [systemMode, setSystemMode] = useState<SystemDataMode>('live');
+  const [isSensorsEnabled, setIsSensorsEnabled] = useState<boolean>(true);
+
   const [sensorStatus, setSensorStatus] = useState<SensorStatus>(initialSensorStatus);
   const [routeState, setRouteState] = useState<RouteState>(initialRouteState);
   const [telemetry, setTelemetry] = useState<TelemetryData>(initialTelemetry);
@@ -138,6 +188,9 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   // Event frequency counter
   const eventTimestampsRef = useRef<number[]>([]);
+
+  // Track if origin was set manually by user
+  const isOriginManualRef = useRef<boolean>(false);
 
   // Refresh cached tiles count from IndexedDB
   const refreshCacheCount = useCallback(async () => {
@@ -213,8 +266,35 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   }, [settings]);
 
-  // Subscribe to REAL hardware sensors (No synthetic random data)
+  // =========================================================================
+  // 1. REAL HARDWARE SENSOR PIPELINE (Strictly Real Sensor Events)
+  // =========================================================================
   useEffect(() => {
+    if (!isSensorsEnabled) {
+      setSensorStatus((prev) => ({
+        ...prev,
+        accel: false,
+        gyro: false,
+        compass: false,
+        sensorsEnabled: false,
+      }));
+      setTelemetry((prev) => ({
+        ...prev,
+        sampleRateHz: 0,
+        isStreamingMotion: false,
+        isStreamingOrientation: false,
+      }));
+      return;
+    }
+
+    setSensorStatus((prev) => ({
+      ...prev,
+      sensorsEnabled: true,
+      hasMotionHardware: SensorService.hasMotionSupport(),
+      hasOrientationHardware: SensorService.hasOrientationSupport(),
+    }));
+
+    // Motion Sensor (3-Axis Accel + 3-Axis Gyro)
     const unsubMotion = SensorService.subscribeMotion((data) => {
       const now = Date.now();
       const offset = accelOffsetRef.current;
@@ -222,11 +302,25 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const rawAy = data.ay - offset.ay;
       const rawAz = data.az - offset.az;
 
-      // Rate calculation
       eventTimestampsRef.current.push(now);
       const oneSecAgo = now - 1000;
       eventTimestampsRef.current = eventTimestampsRef.current.filter((t) => t > oneSecAgo);
       const currentRate = eventTimestampsRef.current.length;
+
+      setRealSensors((prev) => ({
+        ...prev,
+        ax: rawAx,
+        ay: rawAy,
+        az: rawAz,
+        accelMag: data.accelMag,
+        gx: data.gx,
+        gy: data.gy,
+        gz: data.gz,
+        gyroMag: data.gyroMag,
+        intervalMs: data.intervalMs,
+        sampleRateHz: currentRate,
+        timestamp: now,
+      }));
 
       setTelemetry((prev) => ({
         ...prev,
@@ -246,15 +340,26 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           id: `motion-${now}-${Math.floor(Math.random() * 1000)}`,
           timestamp: now,
           type: 'devicemotion',
-          summary: `Accel X:${rawAx.toFixed(2)} Y:${rawAy.toFixed(2)} Z:${rawAz.toFixed(2)} m/s²`,
-          details: { ax: rawAx, ay: rawAy, az: rawAz, interval: data.interval },
+          summary: `Accel X:${rawAx.toFixed(2)} Y:${rawAy.toFixed(2)} Z:${rawAz.toFixed(2)} m/s² | Gyro ${data.gyroMag.toFixed(2)}°/s`,
+          details: { ax: rawAx, ay: rawAy, az: rawAz, gx: data.gx, gy: data.gy, gz: data.gz },
         },
         ...prev.slice(0, 19),
       ]);
     });
 
+    // Orientation Sensor (Pitch, Roll, Yaw, Heading)
     const unsubOrientation = SensorService.subscribeOrientation((data) => {
       const now = Date.now();
+
+      setRealSensors((prev) => ({
+        ...prev,
+        alpha: data.alpha,
+        beta: data.beta,
+        gamma: data.gamma,
+        headingDeg: data.headingDeg,
+        timestamp: now,
+      }));
+
       setTelemetry((prev) => ({
         ...prev,
         yaw: data.alpha != null ? data.alpha : prev.yaw,
@@ -264,7 +369,7 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         lastEventTimestamp: now,
       }));
 
-      if (data.alpha !== null) {
+      if (data.alpha !== null || data.headingDeg !== null) {
         setSensorStatus((prev) => ({ ...prev, compass: true }));
       }
 
@@ -274,17 +379,48 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           timestamp: now,
           type: 'deviceorientation',
           summary: `Yaw:${data.alpha != null ? data.alpha.toFixed(1) : 'N/A'}° Pitch:${data.beta != null ? data.beta.toFixed(1) : 'N/A'}° Roll:${data.gamma != null ? data.gamma.toFixed(1) : 'N/A'}°`,
-          details: { alpha: data.alpha, beta: data.beta, gamma: data.gamma },
+          details: { alpha: data.alpha, beta: data.beta, gamma: data.gamma, heading: data.headingDeg },
         },
         ...prev.slice(0, 19),
       ]);
     });
 
+    // Magnetometer Sensor
+    const unsubMagnetometer = SensorService.subscribeMagnetometer((mag) => {
+      setRealSensors((prev) => ({
+        ...prev,
+        magX: mag.x,
+        magY: mag.y,
+        magZ: mag.z,
+      }));
+    });
+
     return () => {
       unsubMotion();
       unsubOrientation();
+      unsubMagnetometer();
     };
-  }, []);
+  }, [isSensorsEnabled]);
+
+  const toggleSensors = useCallback(
+    async (enable?: boolean): Promise<boolean> => {
+      const targetState = enable !== undefined ? enable : !isSensorsEnabled;
+
+      if (targetState) {
+        // Request hardware permissions
+        await SensorService.requestMotionPermission();
+        await SensorService.requestOrientationPermission();
+        setIsSensorsEnabled(true);
+        showToast('Real Device Sensors: Active ● ON');
+        return true;
+      } else {
+        setIsSensorsEnabled(false);
+        showToast('Real Device Sensors: OFF');
+        return false;
+      }
+    },
+    [isSensorsEnabled, showToast]
+  );
 
   const resetSensorZeroPoint = useCallback(() => {
     accelOffsetRef.current = {
@@ -294,6 +430,107 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
     showToast('Zero-point calibrated: Offsets applied ✓');
   }, [telemetry.ax, telemetry.ay, telemetry.az, showToast]);
+
+  // =========================================================================
+  // 2. CONTINUOUS REAL GPS LOCATION WATCHER & CENTRAL SOURCE OF TRUTH
+  // =========================================================================
+  useEffect(() => {
+    const unsubGps = LocationService.startLocationWatch(
+      (pos: CurrentLocationData) => {
+        setCurrentLocation(pos);
+        setSensorStatus((prev) => ({
+          ...prev,
+          gnss: true,
+          gpsPermission: 'granted',
+        }));
+
+        // If route origin is not manually overridden, sync startCoords with real GPS
+        if (!isOriginManualRef.current && pos.latitude !== null && pos.longitude !== null) {
+          const newStart: [number, number] = [pos.latitude, pos.longitude];
+          setRouteState((prev) => ({
+            ...prev,
+            startCoords: newStart,
+            origin: pos.address,
+          }));
+        }
+
+        if (pos.speed !== null && pos.speed >= 0) {
+          setTelemetry((prev) => ({ ...prev, speed: pos.speed || 0 }));
+        }
+      },
+      (error) => {
+        console.warn('GPS watch status:', error.message);
+        if (error.message.includes('denied')) {
+          setSensorStatus((prev) => ({ ...prev, gnss: false, gpsPermission: 'denied' }));
+        } else {
+          setSensorStatus((prev) => ({ ...prev, gnss: false }));
+        }
+      }
+    );
+
+    return () => {
+      unsubGps();
+    };
+  }, []);
+
+  // GPS Staleness Monitor (Updates location age and detects stale GPS)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentLocation((prev) => {
+        if (!prev.timestamp) return prev;
+        const ageSec = Math.round((Date.now() - prev.timestamp) / 1000);
+        const isStale = ageSec > 10;
+        if (isStale && sensorStatus.gnss) {
+          setSensorStatus((s) => ({ ...s, gnss: false })); // Trigger DR fallback if GPS stale
+        }
+        return {
+          ...prev,
+          ageSec,
+          isStale,
+        };
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [sensorStatus.gnss]);
+
+  // One-click Refresh GPS Action
+  const refreshGpsLocation = useCallback(async (): Promise<CurrentLocationData | null> => {
+    try {
+      showToast('Refreshing real GPS fix...');
+      const loc = await LocationService.getCurrentLocation();
+      const updated: CurrentLocationData = {
+        latitude: loc.lat,
+        longitude: loc.lng,
+        accuracy: loc.accuracy,
+        altitude: loc.altitude,
+        speed: loc.speed,
+        bearing: loc.heading,
+        timestamp: loc.timestamp,
+        address: loc.address,
+        source: 'gps',
+        isStale: false,
+        ageSec: 0,
+      };
+
+      setCurrentLocation(updated);
+      setSensorStatus((prev) => ({ ...prev, gnss: true, gpsPermission: 'granted' }));
+
+      if (!isOriginManualRef.current) {
+        setRouteState((prev) => ({
+          ...prev,
+          startCoords: [loc.lat, loc.lng],
+          origin: loc.address,
+        }));
+      }
+
+      showToast(`GPS Refreshed (${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}) ±${loc.accuracy || '?'}m ✓`);
+      return updated;
+    } catch (err: any) {
+      showToast(`GPS: ${err.message}`);
+      return null;
+    }
+  }, [showToast]);
 
   const selectRoute = useCallback(
     (index: number) => {
@@ -328,28 +565,50 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     [settings.distanceUnit, showToast]
   );
 
-  // Ref to cancel in-flight route requests if destination changes rapidly
+  // Ref to cancel in-flight route requests if destination or vehicle changes rapidly
   const activeRouteAbortControllerRef = useRef<AbortController | null>(null);
+  const routeRequestIdRef = useRef<number>(0);
 
   const calculateDynamicRoute = useCallback(
-    async (overrideStart?: [number, number], overrideDest?: [number, number]) => {
-      // Abort previous in-flight calculation to prevent race conditions
+    async (
+      overrideStart?: [number, number],
+      overrideDest?: [number, number],
+      overrideVehicleType?: VehicleType
+    ) => {
       if (activeRouteAbortControllerRef.current) {
         activeRouteAbortControllerRef.current.abort();
       }
       const abortController = new AbortController();
       activeRouteAbortControllerRef.current = abortController;
 
-      const currentRoute = routeStateRef.current;
-      const start = overrideStart || currentRoute.startCoords;
-      const dest = overrideDest || currentRoute.destCoords;
+      const currentReqId = ++routeRequestIdRef.current;
+
+      let start = overrideStart || routeStateRef.current.startCoords;
+      const dest = overrideDest || routeStateRef.current.destCoords;
+      const vehicleType = overrideVehicleType || routeStateRef.current.vehicleType || 'car';
+
+      // If start is missing, acquire live location
+      if (!start) {
+        try {
+          const loc = await LocationService.getCurrentLocation();
+          start = [loc.lat, loc.lng];
+          setRouteState((prev) => ({
+            ...prev,
+            startCoords: start,
+            origin: loc.address,
+          }));
+          setSensorStatus((prev) => ({ ...prev, gnss: true }));
+        } catch {
+          // Handled below
+        }
+      }
 
       if (!start || !dest) {
         setRouteState((prev) => ({
           ...prev,
           routes: [],
           routeCoordinates: [],
-          error: 'Please set both Start and Destination locations.',
+          error: !start ? 'Unable to acquire current location. Please check GPS permissions.' : 'Please set a destination.',
           calculated: false,
           isCalculating: false,
         }));
@@ -358,16 +617,32 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
       setRouteState((prev) => ({
         ...prev,
+        startCoords: start,
+        destCoords: dest,
+        vehicleType,
         routes: [],
         routeCoordinates: [],
         isCalculating: true,
+        calculated: false,
         error: null,
       }));
 
       try {
-        const result = await LocationService.calculateRoute(start, dest, abortController.signal);
-        const primary = result.selectedRoute;
+        const result = await RouteService.calculateRoute({
+          origin: start,
+          destination: dest,
+          vehicleProfile: vehicleType,
+          alternatives: true,
+          signal: abortController.signal,
+          requestId: currentReqId,
+        });
 
+        // Guard against race conditions from out-of-order responses
+        if (currentReqId !== routeRequestIdRef.current) {
+          return;
+        }
+
+        const primary = result.selectedRoute;
         const hrs = Math.floor(primary.durationMin / 60);
         const mins = primary.durationMin % 60;
         const formattedDuration = hrs > 0 ? `${hrs}h ${mins}m` : `${mins} min`;
@@ -376,6 +651,7 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ...prev,
           startCoords: start,
           destCoords: dest,
+          vehicleType,
           routes: result.routes,
           selectedRouteIndex: 0,
           routeCoordinates: primary.coordinates,
@@ -385,10 +661,22 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           duration: formattedDuration,
           steps: primary.steps,
           via: primary.summary,
+          routeType: result.routeTypeLabel,
+          profileLabel: result.profileLabel,
           calculated: true,
           isCalculating: false,
           error: null,
           isFallbackRoute: false,
+          routingDebug: {
+            vehicle: vehicleType,
+            profile: result.profileLabel,
+            provider: result.providerUrl,
+            requestId: currentReqId,
+            distanceKm: primary.distanceKm,
+            durationMin: primary.durationMin,
+            source: result.source,
+            timestamp: Date.now(),
+          },
         }));
 
         setTelemetry((prev) => ({
@@ -397,17 +685,23 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           eta: formattedDuration,
         }));
 
-        const formattedDistStr = formatKmDistance(primary.distanceKm, settings.distanceUnit);
-        const routeCount = result.routes.length;
-        showToast(
-          `OSRM Route Calculated ✓ (${routeCount} option${routeCount > 1 ? 's' : ''}, ${formattedDistStr})`
-        );
+        const readyMsg =
+          vehicleType === 'walking'
+            ? 'Walking route ready ✓'
+            : vehicleType === 'bike'
+            ? 'Cycling route ready ✓'
+            : 'Driving route ready ✓';
+        showToast(readyMsg);
       } catch (err: any) {
         if (err?.name === 'AbortError') {
-          // A newer calculation request superseded this one
           return;
         }
-        const errMsg = err?.message || 'Failed to calculate route.';
+        if (currentReqId !== routeRequestIdRef.current) {
+          return;
+        }
+
+        const errMsg =
+          err?.message || 'Unable to calculate route. Check your internet connection or destination.';
         setRouteState((prev) => ({
           ...prev,
           routes: [],
@@ -421,19 +715,54 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           remainingKm: 0,
           eta: '--:--',
         }));
-        showToast(`Route: ${errMsg}`);
+        showToast(errMsg);
       }
     },
     [showToast, settings.distanceUnit]
   );
 
+  const setVehicleType = useCallback(
+    async (type: VehicleType) => {
+      setRouteState((prev) => ({
+        ...prev,
+        vehicleType: type,
+        routes: [],
+        routeCoordinates: [],
+        calculated: false,
+        isCalculating: true,
+        error: null,
+      }));
+      const currentStart = routeStateRef.current.startCoords;
+      const currentDest = routeStateRef.current.destCoords;
+      if (currentStart && currentDest) {
+        await calculateDynamicRoute(currentStart, currentDest, type);
+      }
+    },
+    [calculateDynamicRoute]
+  );
+
   const acquireLiveLocation = useCallback(async () => {
     setRouteState((prev) => ({ ...prev, isAcquiringLocation: true, error: null }));
+    isOriginManualRef.current = false;
     try {
       const location = await LocationService.getCurrentLocation();
       const newStart: [number, number] = [location.lat, location.lng];
 
-      setSensorStatus((prev) => ({ ...prev, gnss: true }));
+      setCurrentLocation({
+        latitude: location.lat,
+        longitude: location.lng,
+        accuracy: location.accuracy,
+        altitude: location.altitude,
+        speed: location.speed,
+        bearing: location.heading,
+        timestamp: location.timestamp,
+        address: location.address,
+        source: 'gps',
+        isStale: false,
+        ageSec: 0,
+      });
+
+      setSensorStatus((prev) => ({ ...prev, gnss: true, gpsPermission: 'granted' }));
 
       const currentDest = routeStateRef.current.destCoords;
 
@@ -444,7 +773,7 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         isAcquiringLocation: false,
       }));
 
-      showToast(`Live GPS Acquired: ${location.address.slice(0, 30)}... ✓`);
+      showToast(`GPS Acquired: ${location.address.slice(0, 30)}... ✓`);
 
       if (currentDest) {
         await calculateDynamicRoute(newStart, currentDest);
@@ -457,34 +786,52 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   }, [calculateDynamicRoute, showToast]);
 
-  // Execute location acquisition ONCE on initial mount
-  useEffect(() => {
-    acquireLiveLocation();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const setStartCoordsAndAddress = async (coords: [number, number], address: string) => {
+  const setStartCoordsAndAddress = async (coords: [number, number], address: string, isManual = true) => {
+    isOriginManualRef.current = isManual;
     const currentDest = routeStateRef.current.destCoords;
     setRouteState((prev) => ({
       ...prev,
       startCoords: coords,
       origin: address,
     }));
+    if (isManual) {
+      setCurrentLocation((prev) => ({
+        ...prev,
+        latitude: coords[0],
+        longitude: coords[1],
+        address,
+        source: 'manual',
+      }));
+    }
     if (currentDest) {
       await calculateDynamicRoute(coords, currentDest);
     }
   };
 
   const setDestCoordsAndAddress = async (coords: [number, number], address: string) => {
-    const currentStart = routeStateRef.current.startCoords;
+    let currentStart = routeStateRef.current.startCoords;
     setRouteState((prev) => ({
       ...prev,
       destCoords: coords,
       destination: address,
     }));
-    if (currentStart) {
-      await calculateDynamicRoute(currentStart, coords);
+
+    if (!currentStart) {
+      try {
+        const loc = await LocationService.getCurrentLocation();
+        currentStart = [loc.lat, loc.lng];
+        setRouteState((prev) => ({
+          ...prev,
+          startCoords: currentStart,
+          origin: loc.address,
+        }));
+        setSensorStatus((prev) => ({ ...prev, gnss: true }));
+      } catch {
+        // Handled in calculateDynamicRoute
+      }
     }
+
+    await calculateDynamicRoute(currentStart || undefined, coords);
   };
 
   const swapLocations = () => {
@@ -513,21 +860,16 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     showToast(granted ? 'Compass Hardware Active ✓' : 'Compass Permission Denied / Unsupported');
   };
 
-  const grantGnssPermission = () => {
-    acquireLiveLocation();
+  const grantGnssPermission = async () => {
+    await acquireLiveLocation();
   };
 
   const grantAllSensors = async () => {
-    const motionGranted = await SensorService.requestMotionPermission();
-    const orientationGranted = await SensorService.requestOrientationPermission();
-    setSensorStatus((prev) => ({
-      ...prev,
-      accel: motionGranted,
-      gyro: motionGranted,
-      compass: orientationGranted,
-    }));
-    acquireLiveLocation();
-    showToast('Hardware Sensor Permissions Requested ✓');
+    await SensorService.requestMotionPermission();
+    await SensorService.requestOrientationPermission();
+    setIsSensorsEnabled(true);
+    await acquireLiveLocation();
+    showToast('Real Hardware Sensor Permissions Requested ✓');
   };
 
   const setRouteDestination = (destination: string) => {
@@ -619,7 +961,7 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     showToast('Logged out');
   };
 
-  // Real Tracking Session Lifecycle
+  // Tracking Session Lifecycle
   const startTrackingSession = useCallback(() => {
     const sessionId = `session-${Date.now()}`;
     setTrackingSession({
@@ -694,6 +1036,10 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   return (
     <NavigationContext.Provider
       value={{
+        currentLocation,
+        realSensors,
+        systemMode,
+        isSensorsEnabled,
         sensorStatus,
         routeState,
         telemetry,
@@ -706,6 +1052,9 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         cachedTilesCount,
         sensorEventsStream,
         trackingSession,
+        toggleSensors,
+        setSystemMode,
+        refreshGpsLocation,
         setMatrixScenario,
         calibrateCompass,
         grantGnssPermission,
@@ -713,6 +1062,7 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         acquireLiveLocation,
         setStartCoordsAndAddress,
         setDestCoordsAndAddress,
+        setVehicleType,
         calculateDynamicRoute,
         selectRoute,
         swapLocations,

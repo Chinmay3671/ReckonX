@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import L from 'leaflet';
 import { TileCacheService } from '../services/tileCacheService';
 import { MAP_CONFIG } from '../config/mapConfig';
-import type { RouteOption } from '../types/navigation';
+import type { RouteOption, VehicleType } from '../types/navigation';
+import { Plus, Minus, Locate, Maximize2 } from 'lucide-react';
 
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
@@ -20,7 +21,7 @@ const createStartIcon = () =>
   L.divIcon({
     className: 'custom-start-icon',
     html: `
-      <div style="width: 22px; height: 22px; background: #059669; border: 3px solid #FFFFFF; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3);"></div>
+      <div style="width: 22px; height: 22px; background: #059669; border: 3px solid #FFFFFF; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.35);"></div>
     `,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
@@ -30,32 +31,67 @@ const createDestIcon = () =>
   L.divIcon({
     className: 'custom-dest-icon',
     html: `
-      <div style="width: 24px; height: 24px; background: #DC2626; border: 3px solid #FFFFFF; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.4); cursor: grab;"></div>
+      <div style="width: 24px; height: 24px; background: #DC2626; border: 3px solid #FFFFFF; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.45); cursor: grab;"></div>
     `,
     iconSize: [24, 24],
     iconAnchor: [12, 12],
   });
 
-// Dynamic High-Visibility Navigation Vehicle Arrow Icon
-const createChevronIcon = (heading: number = 0) =>
-  L.divIcon({
-    className: 'custom-chevron-icon',
+// Dynamic High-Visibility Navigation Vehicle Arrow Icon with Profile Awareness
+const createChevronIcon = (heading: number = 0, vehicleType: 'car' | 'bike' | 'walking' = 'car') => {
+  let primaryColor = '#2563EB'; // Car Blue
+  let strokeColor = '#93C5FD';
+  let haloColor = 'rgba(37, 99, 235, 0.2)';
+  let haloBorder = 'rgba(59, 130, 246, 0.5)';
+  let iconSvg = `
+    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2L20 20.5L12 16.5L4 20.5L12 2Z" fill="${primaryColor}" stroke="#FFFFFF" stroke-width="2.2" stroke-linejoin="round"/>
+      <path d="M12 3.5L12 15.5" stroke="${strokeColor}" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+  `;
+
+  if (vehicleType === 'bike') {
+    primaryColor = '#059669'; // Emerald
+    strokeColor = '#A7F3D0';
+    haloColor = 'rgba(5, 150, 105, 0.2)';
+    haloBorder = 'rgba(16, 185, 129, 0.5)';
+    iconSvg = `
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="10.5" fill="${primaryColor}" stroke="#FFFFFF" stroke-width="2"/>
+        <path d="M12 5L16 14L12 11.5L8 14L12 5Z" fill="#FFFFFF"/>
+        <circle cx="12" cy="17" r="1.5" fill="${strokeColor}"/>
+      </svg>
+    `;
+  } else if (vehicleType === 'walking') {
+    primaryColor = '#D97706'; // Amber/Orange
+    strokeColor = '#FDE68A';
+    haloColor = 'rgba(217, 119, 6, 0.2)';
+    haloBorder = 'rgba(245, 158, 11, 0.5)';
+    iconSvg = `
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="10.5" fill="${primaryColor}" stroke="#FFFFFF" stroke-width="2"/>
+        <path d="M12 5L15.5 13L12 11L8.5 13L12 5Z" fill="#FFFFFF"/>
+        <circle cx="12" cy="16.5" r="1.5" fill="${strokeColor}"/>
+      </svg>
+    `;
+  }
+
+  return L.divIcon({
+    className: `custom-chevron-icon custom-chevron-${vehicleType}`,
     html: `
       <div style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; position: relative;">
         <!-- Accuracy pulse halo -->
-        <div style="position: absolute; width: 28px; height: 28px; border-radius: 50%; background: rgba(37, 99, 235, 0.2); border: 1.5px solid rgba(59, 130, 246, 0.5);"></div>
+        <div style="position: absolute; width: 30px; height: 30px; border-radius: 50%; background: ${haloColor}; border: 1.5px solid ${haloBorder};"></div>
         <!-- Directional vehicle navigation arrow SVG with centered transform-origin -->
         <div class="chevron-arrow" style="width: 34px; height: 34px; transform: rotate(${heading}deg); transform-origin: center center; will-change: transform; display: flex; align-items: center; justify-content: center; filter: drop-shadow(0px 3px 6px rgba(0,0,0,0.45));">
-          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 2L20 20.5L12 16.5L4 20.5L12 2Z" fill="#2563EB" stroke="#FFFFFF" stroke-width="2.2" stroke-linejoin="round"/>
-            <path d="M12 3.5L12 15.5" stroke="#93C5FD" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
+          ${iconSvg}
         </div>
       </div>
     `,
     iconSize: [44, 44],
     iconAnchor: [22, 22],
   });
+};
 
 // Custom Leaflet TileLayer with IndexedDB Offline Persistence Interceptor
 const IndexedDBTileLayer = L.TileLayer.extend({
@@ -94,7 +130,6 @@ const IndexedDBTileLayer = L.TileLayer.extend({
             reader.readAsDataURL(blob);
           })
           .catch(() => {
-            // If online fetch fails and offline, use placeholder
             const placeholder = TileCacheService.getPlaceholderTile();
             tile.src = placeholder;
           });
@@ -119,9 +154,12 @@ export interface MapViewProps {
   rawInsPath?: [number, number][];
   liveVehiclePos?: [number, number] | null;
   liveHeading?: number;
+  vehicleType?: VehicleType;
   cameraMode?: 'north-up' | 'head-up';
   isDarkMode?: boolean;
+  hideControls?: boolean;
   onMapClick?: (lat: number, lng: number) => void;
+  onStartDragEnd?: (lat: number, lng: number) => void;
   onDestinationDragEnd?: (lat: number, lng: number) => void;
   onSelectRoute?: (index: number) => void;
   onToggleCameraMode?: () => void;
@@ -142,9 +180,12 @@ const MapViewComponent: React.FC<MapViewProps> = ({
   rawInsPath = [],
   liveVehiclePos = null,
   liveHeading = 0,
+  vehicleType = 'car',
   cameraMode = 'north-up',
   isDarkMode = false,
+  hideControls = false,
   onMapClick,
+  onStartDragEnd,
   onDestinationDragEnd,
   onSelectRoute,
   onToggleCameraMode,
@@ -155,8 +196,17 @@ const MapViewComponent: React.FC<MapViewProps> = ({
   const routeLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const markerLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const vehicleMarkerRef = useRef<L.Marker | null>(null);
+  const vehicleTypeRef = useRef<VehicleType>(vehicleType);
   const isProgrammaticMoveRef = useRef<boolean>(false);
-  const isInitialNavCenterDoneRef = useRef<boolean>(false);
+  const isInitialCenterDoneRef = useRef<boolean>(false);
+  const lastFittedRouteKeyRef = useRef<string>('');
+
+  useEffect(() => {
+    vehicleTypeRef.current = vehicleType;
+    if (vehicleMarkerRef.current) {
+      vehicleMarkerRef.current.setIcon(createChevronIcon(visualHeadingRef.current, vehicleType));
+    }
+  }, [vehicleType]);
 
   // High-Rate 60 FPS Visual Animation References
   const targetPosRef = useRef<[number, number] | null>(liveVehiclePos || startCoords);
@@ -165,11 +215,24 @@ const MapViewComponent: React.FC<MapViewProps> = ({
   const visualHeadingRef = useRef<number>(liveHeading || 0);
   const cameraModeRef = useRef<'north-up' | 'head-up'>(cameraMode);
 
-  // Sync targets on prop updates without re-triggering animation setup
+  // Follow Mode State (OFF by default in explore/route-setup; ON in navigation)
+  const [isFollowMode, setIsFollowMode] = useState<boolean>(mode === 'navigation');
+  const followModeRef = useRef<boolean>(mode === 'navigation');
+
+  const updateFollowMode = useCallback(
+    (val: boolean) => {
+      followModeRef.current = val;
+      setIsFollowMode(val);
+      onFollowModeChange?.(val);
+    },
+    [onFollowModeChange]
+  );
+
   useEffect(() => {
     cameraModeRef.current = cameraMode;
   }, [cameraMode]);
 
+  // Keep targetPosRef updated without triggering map camera updates
   useEffect(() => {
     if (liveVehiclePos) {
       targetPosRef.current = liveVehiclePos;
@@ -186,20 +249,7 @@ const MapViewComponent: React.FC<MapViewProps> = ({
     targetHeadingRef.current = liveHeading;
   }, [liveHeading]);
 
-  // Follow Mode State
-  const [isFollowMode, setIsFollowMode] = useState<boolean>(mode === 'navigation');
-  const followModeRef = useRef<boolean>(mode === 'navigation');
-
-  const updateFollowMode = useCallback(
-    (val: boolean) => {
-      followModeRef.current = val;
-      setIsFollowMode(val);
-      onFollowModeChange?.(val);
-    },
-    [onFollowModeChange]
-  );
-
-  // Initialize map once
+  // Initialize Leaflet Map once
   useEffect(() => {
     if (!mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
@@ -209,8 +259,12 @@ const MapViewComponent: React.FC<MapViewProps> = ({
     const map = L.map(mapContainerRef.current, {
       center: initialCenter,
       zoom: zoom,
+      minZoom: 3,
+      maxZoom: 19,
       zoomControl: false,
       attributionControl: true,
+      fadeAnimation: true,
+      zoomAnimation: true,
     });
 
     new (IndexedDBTileLayer as any)(MAP_CONFIG.OSM_TILE_URL, {
@@ -225,7 +279,7 @@ const MapViewComponent: React.FC<MapViewProps> = ({
     markerLayerGroupRef.current = markerGroup;
     mapInstanceRef.current = map;
 
-    // Detect user manual interactions to release Follow Mode
+    // Detect user manual interaction (drag, zoom, pan) to immediately deactivate follow mode
     const handleUserMapInteraction = () => {
       if (isProgrammaticMoveRef.current) return;
       if (followModeRef.current) {
@@ -234,13 +288,19 @@ const MapViewComponent: React.FC<MapViewProps> = ({
     };
 
     map.on('dragstart', handleUserMapInteraction);
-    map.on('zoomstart', () => {
-      if (!isProgrammaticMoveRef.current && followModeRef.current) {
-        updateFollowMode(false);
-      }
+    map.on('zoomstart', handleUserMapInteraction);
+    map.on('movestart', handleUserMapInteraction);
+
+    // ResizeObserver to ensure tiles render cleanly without container clipping
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize();
     });
+    if (mapContainerRef.current) {
+      resizeObserver.observe(mapContainerRef.current);
+    }
 
     return () => {
+      resizeObserver.disconnect();
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -250,7 +310,24 @@ const MapViewComponent: React.FC<MapViewProps> = ({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [updateFollowMode]);
+  }, []);
+
+  // One-time initial camera center
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || isInitialCenterDoneRef.current) return;
+
+    const initialPos = startCoords || liveVehiclePos;
+    if (initialPos) {
+      isProgrammaticMoveRef.current = true;
+      map.setView(initialPos, zoom, { animate: false });
+      isInitialCenterDoneRef.current = true;
+      setTimeout(() => {
+        isProgrammaticMoveRef.current = false;
+        map.invalidateSize();
+      }, 200);
+    }
+  }, [startCoords, liveVehiclePos, zoom]);
 
   // Map click listener
   useEffect(() => {
@@ -269,7 +346,7 @@ const MapViewComponent: React.FC<MapViewProps> = ({
     };
   }, [onMapClick]);
 
-  // 60 FPS Visual Interpolation Loop for Marker & Camera Follow
+  // 60 FPS Visual Interpolation Loop for Vehicle Marker & Optional Camera Follow
   useEffect(() => {
     let animId: number;
     let lastTime = performance.now();
@@ -300,7 +377,7 @@ const MapViewComponent: React.FC<MapViewProps> = ({
         const vPos: [number, number] = [visualPosRef.current[0], visualPosRef.current[1]];
         const vHead = visualHeadingRef.current;
 
-        // Update vehicle marker imperatively
+        // Update vehicle marker imperatively (DOES NOT MOVE CAMERA)
         if (marker) {
           marker.setLatLng(vPos);
           const el = marker.getElement();
@@ -310,23 +387,22 @@ const MapViewComponent: React.FC<MapViewProps> = ({
           }
         } else if (markerLayerGroupRef.current) {
           const newMarker = L.marker(vPos, {
-            icon: createChevronIcon(vHead),
+            icon: createChevronIcon(vHead, vehicleTypeRef.current || 'car'),
             zIndexOffset: 1000,
           }).addTo(markerLayerGroupRef.current);
           vehicleMarkerRef.current = newMarker;
         }
 
-        // Smooth Camera Follow: Glide camera smoothly along with marker
+        // ONLY glide camera if Follow Mode is explicitly ON (e.g. active navigation)
         if (
           followModeRef.current &&
-          mode === 'navigation' &&
           map &&
           !isProgrammaticMoveRef.current
         ) {
           map.panTo(vPos, { animate: false });
         }
 
-        // Smooth Map Orientation (Head-Up Follow vs North-Up)
+        // Head-Up Camera Rotation if enabled
         if (mapContainerRef.current) {
           if (cameraModeRef.current === 'head-up') {
             mapContainerRef.current.style.transform = `rotate(${-vHead}deg)`;
@@ -341,9 +417,9 @@ const MapViewComponent: React.FC<MapViewProps> = ({
 
     animId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animId);
-  }, [mode]);
+  }, []);
 
-  // Reactive Route & Marker Overlays (Renders only when coordinates / routes change)
+  // Reactive Route & Marker Overlays (Renders polylines & markers; does NOT auto-recenter continuously)
   useEffect(() => {
     const map = mapInstanceRef.current;
     const routeGroup = routeLayerGroupRef.current;
@@ -351,14 +427,22 @@ const MapViewComponent: React.FC<MapViewProps> = ({
 
     routeGroup.clearLayers();
 
-    const bounds: [number, number][] = [];
-
     // 1. Start Marker (Green Circle)
     if (startCoords) {
-      L.marker(startCoords, { icon: createStartIcon() })
+      const startMarker = L.marker(startCoords, {
+        icon: createStartIcon(),
+        draggable: !!onStartDragEnd,
+      })
         .bindPopup('<b>Start / Current Location</b>')
         .addTo(routeGroup);
-      bounds.push(startCoords);
+
+      if (onStartDragEnd) {
+        startMarker.on('dragend', (event: L.DragEndEvent) => {
+          const target = event.target as L.Marker;
+          const pos = target.getLatLng();
+          onStartDragEnd(pos.lat, pos.lng);
+        });
+      }
     }
 
     // 2. Destination Marker (Red Circle - Draggable)
@@ -377,8 +461,6 @@ const MapViewComponent: React.FC<MapViewProps> = ({
           onDestinationDragEnd(pos.lat, pos.lng);
         });
       }
-
-      bounds.push(destCoords);
     }
 
     // 3. Multi-Route Layer Rendering (OSRM Alternatives + Active Selection)
@@ -393,12 +475,13 @@ const MapViewComponent: React.FC<MapViewProps> = ({
               opacity: 0.8,
               dashArray: '6, 6',
               lineCap: 'round',
+              className: 'cursor-pointer hover:opacity-100',
             }).addTo(routeGroup);
 
             altLine.on('click', () => {
               onSelectRoute?.(idx);
             });
-            altLine.bindTooltip(`<b>${r.label}</b>: ${r.durationMin}m (${r.distanceKm} km)`, {
+            altLine.bindTooltip(`<b>${r.label || `Option ${idx + 1}`}</b>: ${r.durationMin} min (${r.distanceKm} km)`, {
               sticky: true,
             });
           }
@@ -415,13 +498,16 @@ const MapViewComponent: React.FC<MapViewProps> = ({
             lineJoin: 'round',
           }).addTo(routeGroup);
 
-          if (mode !== 'navigation') {
+          // Fit bounds ONLY ONCE when a brand new route is calculated
+          const routeKey = `${activeRoute.id || 'route'}_${activeRoute.distanceKm}_${activeRoute.coordinates.length}`;
+          if (lastFittedRouteKeyRef.current !== routeKey && mode !== 'navigation') {
+            lastFittedRouteKeyRef.current = routeKey;
             try {
               isProgrammaticMoveRef.current = true;
               map.fitBounds(mainLine.getBounds(), { padding: [40, 40] });
               setTimeout(() => {
                 isProgrammaticMoveRef.current = false;
-              }, 300);
+              }, 400);
             } catch {
               // Ignore zero bound errors
             }
@@ -436,13 +522,15 @@ const MapViewComponent: React.FC<MapViewProps> = ({
           lineJoin: 'round',
         }).addTo(routeGroup);
 
-        if (mode !== 'navigation') {
+        const routeKey = `coords_${routeCoordinates.length}`;
+        if (lastFittedRouteKeyRef.current !== routeKey && mode !== 'navigation') {
+          lastFittedRouteKeyRef.current = routeKey;
           try {
             isProgrammaticMoveRef.current = true;
             map.fitBounds(polyline.getBounds(), { padding: [40, 40] });
             setTimeout(() => {
               isProgrammaticMoveRef.current = false;
-            }, 300);
+            }, 400);
           } catch {
             // Ignore zero bound errors
           }
@@ -471,19 +559,6 @@ const MapViewComponent: React.FC<MapViewProps> = ({
         lineCap: 'round',
       }).addTo(routeGroup);
     }
-
-    if (
-      bounds.length === 2 &&
-      mode !== 'navigation' &&
-      (!routeCoordinates || routeCoordinates.length === 0) &&
-      (!routes || routes.length === 0)
-    ) {
-      isProgrammaticMoveRef.current = true;
-      map.fitBounds(L.latLngBounds(bounds), { padding: [50, 50] });
-      setTimeout(() => {
-        isProgrammaticMoveRef.current = false;
-      }, 300);
-    }
   }, [
     mode,
     startCoords,
@@ -494,110 +569,86 @@ const MapViewComponent: React.FC<MapViewProps> = ({
     deadReckoningPath,
     rawInsPath,
     showRoute,
+    onStartDragEnd,
     onDestinationDragEnd,
     onSelectRoute,
   ]);
 
-  // Initial navigation centering
-  useEffect(() => {
+  // Explicit User Camera Actions
+  const handleZoomIn = () => {
     const map = mapInstanceRef.current;
-    if (!map || mode !== 'navigation' || isInitialNavCenterDoneRef.current) return;
+    if (!map) return;
+    isProgrammaticMoveRef.current = true;
+    map.zoomIn();
+    setTimeout(() => {
+      isProgrammaticMoveRef.current = false;
+    }, 300);
+  };
 
+  const handleZoomOut = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    isProgrammaticMoveRef.current = true;
+    map.zoomOut();
+    setTimeout(() => {
+      isProgrammaticMoveRef.current = false;
+    }, 300);
+  };
+
+  const handleRecenterOnLocation = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
     const pos = visualPosRef.current || targetPosRef.current || startCoords;
     if (pos) {
       isProgrammaticMoveRef.current = true;
-      map.setView(pos, 16, { animate: false });
-      isInitialNavCenterDoneRef.current = true;
+      map.flyTo(pos, Math.max(map.getZoom(), 15), { duration: 0.8 });
+      updateFollowMode(true);
       setTimeout(() => {
         isProgrammaticMoveRef.current = false;
-      }, 250);
+      }, 900);
     }
-  }, [mode, startCoords]);
+  };
 
-  // Map control helper functions (exposed globally for HUD buttons)
-  useEffect(() => {
-    (window as any).__mapZoomIn = () => {
-      const map = mapInstanceRef.current;
-      if (!map) return;
-      isProgrammaticMoveRef.current = true;
-      map.zoomIn();
-      setTimeout(() => {
-        isProgrammaticMoveRef.current = false;
-      }, 300);
-    };
+  const handleShowEntireRoute = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
 
-    (window as any).__mapZoomOut = () => {
-      const map = mapInstanceRef.current;
-      if (!map) return;
-      isProgrammaticMoveRef.current = true;
-      map.zoomOut();
-      setTimeout(() => {
-        isProgrammaticMoveRef.current = false;
-      }, 300);
-    };
+    const activeCoords =
+      routes && routes[selectedRouteIndex]?.coordinates.length > 0
+        ? routes[selectedRouteIndex].coordinates
+        : routeCoordinates;
 
-    (window as any).__mapRecenter = () => {
-      const map = mapInstanceRef.current;
-      if (!map) return;
-
-      const pos = visualPosRef.current || targetPosRef.current || startCoords;
-      if (mode === 'navigation') {
-        if (pos) {
-          isProgrammaticMoveRef.current = true;
-          map.setView(pos, 16, { animate: true });
-          updateFollowMode(true);
-          setTimeout(() => {
-            isProgrammaticMoveRef.current = false;
-          }, 400);
-        }
-      } else if (startCoords && destCoords) {
-        isProgrammaticMoveRef.current = true;
-        map.fitBounds(L.latLngBounds([startCoords, destCoords]), { padding: [40, 40] });
-        setTimeout(() => {
-          isProgrammaticMoveRef.current = false;
-        }, 300);
-      } else if (startCoords) {
-        isProgrammaticMoveRef.current = true;
-        map.setView(startCoords, 14);
-        setTimeout(() => {
-          isProgrammaticMoveRef.current = false;
-        }, 300);
-      }
-    };
-
-    (window as any).__mapViewFullRoute = () => {
-      const map = mapInstanceRef.current;
-      if (!map) return;
-      const coords =
-        routes && routes[selectedRouteIndex]?.coordinates.length > 0
-          ? routes[selectedRouteIndex].coordinates
-          : routeCoordinates;
-
-      if (!coords || coords.length === 0) return;
-
+    if (activeCoords && activeCoords.length > 0) {
       isProgrammaticMoveRef.current = true;
       updateFollowMode(false);
-      map.fitBounds(L.latLngBounds(coords), { padding: [50, 50] });
+      map.fitBounds(L.latLngBounds(activeCoords), { padding: [40, 40] });
       setTimeout(() => {
         isProgrammaticMoveRef.current = false;
       }, 400);
-    };
-  }, [
-    mode,
-    startCoords,
-    destCoords,
-    routes,
-    selectedRouteIndex,
-    routeCoordinates,
-    updateFollowMode,
-  ]);
+    } else if (startCoords && destCoords) {
+      isProgrammaticMoveRef.current = true;
+      updateFollowMode(false);
+      map.fitBounds(L.latLngBounds([startCoords, destCoords]), { padding: [40, 40] });
+      setTimeout(() => {
+        isProgrammaticMoveRef.current = false;
+      }, 400);
+    }
+  };
+
+  // Expose global methods for HUD buttons
+  useEffect(() => {
+    (window as any).__mapZoomIn = handleZoomIn;
+    (window as any).__mapZoomOut = handleZoomOut;
+    (window as any).__mapRecenter = handleRecenterOnLocation;
+    (window as any).__mapViewFullRoute = handleShowEntireRoute;
+  });
 
   return (
-    <div className="relative w-full h-full overflow-hidden bg-slate-100">
-      {/* Map Container with CSS Head-Up Rotation managed via RAF */}
+    <div className="relative w-full h-full overflow-hidden bg-slate-100 touch-pan-x touch-pan-y">
+      {/* Map Viewport Container */}
       <div
         ref={mapContainerRef}
-        className={`w-full h-full relative z-0 ${
+        className={`w-full h-full relative z-0 cursor-grab active:cursor-grabbing ${
           isDarkMode ? 'brightness-75 invert contrast-125 hue-rotate-180' : ''
         }`}
         style={{
@@ -605,7 +656,56 @@ const MapViewComponent: React.FC<MapViewProps> = ({
         }}
       />
 
-      {/* Floating Camera Mode Badge / Quick Toggle */}
+      {/* Floating Google-Maps-Style Action Controls */}
+      {!hideControls && (
+        <div className="absolute right-3 bottom-3 z-20 flex flex-col gap-1.5 shadow-md rounded-lg overflow-hidden border border-slate-200 bg-white/95 backdrop-blur-xs">
+          {/* Zoom In */}
+          <button
+            onClick={handleZoomIn}
+            className="w-8 h-8 flex items-center justify-center text-slate-800 hover:bg-slate-100 transition-colors border-b border-slate-100 cursor-pointer"
+            title="Zoom In"
+            aria-label="Zoom In"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+
+          {/* Zoom Out */}
+          <button
+            onClick={handleZoomOut}
+            className="w-8 h-8 flex items-center justify-center text-slate-800 hover:bg-slate-100 transition-colors border-b border-slate-100 cursor-pointer"
+            title="Zoom Out"
+            aria-label="Zoom Out"
+          >
+            <Minus className="w-4 h-4" />
+          </button>
+
+          {/* Center on My Location (◎) */}
+          <button
+            onClick={handleRecenterOnLocation}
+            className={`w-8 h-8 flex items-center justify-center transition-colors border-b border-slate-100 cursor-pointer ${
+              isFollowMode ? 'text-blue-700 bg-blue-50' : 'text-slate-700 hover:bg-slate-100'
+            }`}
+            title="Center on My Location (◎)"
+            aria-label="Center on Location"
+          >
+            <Locate className="w-4 h-4" />
+          </button>
+
+          {/* Show Entire Route */}
+          {(routeCoordinates.length > 0 || routes.length > 0) && (
+            <button
+              onClick={handleShowEntireRoute}
+              className="w-8 h-8 flex items-center justify-center text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+              title="Show Entire Route"
+              aria-label="Show Entire Route"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Floating Camera Mode Quick Toggle in Navigation */}
       {mode === 'navigation' && onToggleCameraMode && (
         <div className="absolute left-3 top-16 z-20 flex flex-col gap-1.5">
           <button
@@ -617,10 +717,9 @@ const MapViewComponent: React.FC<MapViewProps> = ({
             <span>{cameraMode === 'north-up' ? 'North-Up' : 'Head-Up (Follow)'}</span>
           </button>
 
-          {/* Follow Mode Status Indicator Badge */}
           {!isFollowMode && (
             <button
-              onClick={() => (window as any).__mapRecenter?.()}
+              onClick={handleRecenterOnLocation}
               className="bg-amber-500 text-white shadow-md px-2.5 py-1 rounded-full text-[10px] font-extrabold flex items-center gap-1 hover:bg-amber-600 transition-all active:scale-95 cursor-pointer"
               title="Map is in free pan mode. Tap to re-center on vehicle."
             >

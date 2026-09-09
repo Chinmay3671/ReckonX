@@ -22,12 +22,16 @@ import { formatKmDistance } from '../utils/distanceFormatter';
 export const ExplorePage: React.FC = () => {
   const navigate = useNavigate();
   const {
+    currentLocation,
     routeState,
     sensorStatus,
     telemetry,
     settings,
+    systemMode,
     acquireLiveLocation,
+    setStartCoordsAndAddress,
     setDestCoordsAndAddress,
+    selectRoute,
     clearRoute,
   } = useNavigationContext();
 
@@ -122,11 +126,29 @@ export const ExplorePage: React.FC = () => {
     await setDestCoordsAndAddress(coords, address);
   };
 
+  const liveCoords: [number, number] | null =
+    currentLocation.latitude !== null && currentLocation.longitude !== null
+      ? [currentLocation.latitude, currentLocation.longitude]
+      : routeState.startCoords;
+
   return (
     <MobileShell footer={<BottomNav />} hideFooterPadding>
       <div className="relative h-full w-full bg-slate-50 overflow-hidden">
         {/* Top Search & GPS Trigger Header */}
         <div className="absolute top-0 left-0 right-0 z-20 bg-white border-b border-slate-200 p-3 space-y-2 shadow-xs">
+          {/* Top Mode Indicator Bar */}
+          <div className="flex items-center justify-between text-[10px] font-mono">
+            <span className="flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              {systemMode === 'live' ? 'LIVE DEVICE DATA' : 'SIMULATION MODE'}
+            </span>
+            <span className="text-slate-500 font-semibold">
+              {currentLocation.accuracy != null
+                ? `GPS ±${currentLocation.accuracy}m`
+                : 'Searching Satellites...'}
+            </span>
+          </div>
+
           {/* Search Input Field */}
           <div className="flex items-center gap-2 bg-white border border-slate-300 rounded-md px-3 py-2 relative shadow-2xs">
             <button
@@ -143,7 +165,7 @@ export const ExplorePage: React.FC = () => {
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               className="w-full text-xs font-bold text-slate-900 bg-transparent focus:outline-none placeholder:font-normal placeholder:text-slate-400 truncate"
-              placeholder="Search destination (e.g. Pune) or tap map..."
+              placeholder="Search destination (e.g. Mumbai, Pune) or tap map..."
             />
             {isSearching ? (
               <Loader2 className="w-4 h-4 text-blue-700 animate-spin flex-shrink-0" />
@@ -215,19 +237,25 @@ export const ExplorePage: React.FC = () => {
         </div>
 
         {/* Dynamic Leaflet Map Viewport */}
-        <div className="w-full h-full pt-28 pb-16">
+        <div className="w-full h-full pt-32 pb-16">
           <MapView
             mode="explore"
             showRoute={routeState.calculated}
-            startCoords={routeState.startCoords}
+            startCoords={liveCoords}
             destCoords={routeState.destCoords}
             routes={routeState.routes}
             selectedRouteIndex={routeState.selectedRouteIndex}
             routeCoordinates={routeState.routeCoordinates}
-            liveVehiclePos={routeState.startCoords}
+            liveVehiclePos={liveCoords}
             liveHeading={telemetry.yaw || 0}
+            vehicleType={routeState.vehicleType || 'car'}
             onMapClick={handleMapClick}
+            onStartDragEnd={async (lat, lng) => {
+              const address = await LocationService.reverseGeocode(lat, lng);
+              await setStartCoordsAndAddress([lat, lng], address, true);
+            }}
             onDestinationDragEnd={handleDestinationDragEnd}
+            onSelectRoute={selectRoute}
           />
         </div>
 

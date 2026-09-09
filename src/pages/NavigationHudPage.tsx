@@ -24,7 +24,6 @@ import {
 import { MobileShell } from '../components/MobileShell';
 import { DeadReckoningEngine } from '../services/deadReckoningEngine';
 import { OrientationService } from '../services/OrientationService';
-import { SensorService } from '../services/sensorService';
 import { formatKmDistance } from '../utils/distanceFormatter';
 import { calculateRemainingRoadDistance } from '../utils/routeProgress';
 import type { OperationalMatrixScenario } from '../types/navigation';
@@ -232,6 +231,8 @@ const LiveMetricsOverlay: React.FC<{
 export const NavigationHudPage: React.FC = () => {
   const navigate = useNavigate();
   const {
+    currentLocation,
+    realSensors,
     routeState,
     telemetry,
     sensorStatus,
@@ -245,12 +246,14 @@ export const NavigationHudPage: React.FC = () => {
 
   // Navigation Vehicle Positioning & Orientation
   const [currentVehiclePos, setCurrentVehiclePos] = useState<[number, number] | null>(
-    routeState.startCoords || (routeState.routeCoordinates[0] ?? null)
+    currentLocation.latitude !== null && currentLocation.longitude !== null
+      ? [currentLocation.latitude, currentLocation.longitude]
+      : routeState.startCoords || (routeState.routeCoordinates[0] ?? null)
   );
   const [liveHeading, setLiveHeading] = useState<number>(0);
   const [remainingKm, setRemainingKm] = useState<number>(routeState.distanceKm || 0);
   const [drDrift, setDrDrift] = useState<number>(0.0);
-  const [isGnssLocked, setIsGnssLocked] = useState<boolean>(sensorStatus.gnss);
+  const [isGnssLocked, setIsGnssLocked] = useState<boolean>(sensorStatus.gnss && !currentLocation.isStale);
 
   // Multi-Trajectory Overlays State
   const [deadReckoningPath, setDeadReckoningPath] = useState<[number, number][]>([]);
@@ -263,31 +266,63 @@ export const NavigationHudPage: React.FC = () => {
   const prevVehiclePosRef = useRef<[number, number] | null>(null);
   const currentVehiclePosRef = useRef<[number, number] | null>(currentVehiclePos);
   const accumulatedDriftRef = useRef<number>(0);
-  const lastGnssFixTimeRef = useRef<number>(0);
-
-  useEffect(() => {
-    lastGnssFixTimeRef.current = Date.now();
-  }, []);
+  const lastGnssFixTimeRef = useRef<number>(Date.now());
 
   useEffect(() => {
     currentVehiclePosRef.current = currentVehiclePos;
   }, [currentVehiclePos]);
 
+  // Sync with central currentLocation whenever a fresh GPS fix arrives
+  useEffect(() => {
+    if (
+      currentLocation.latitude !== null &&
+      currentLocation.longitude !== null &&
+      !currentLocation.isStale
+    ) {
+      const newPos: [number, number] = [currentLocation.latitude, currentLocation.longitude];
+      lastGnssFixTimeRef.current = Date.now();
+      setIsGnssLocked(true);
+      accumulatedDriftRef.current = 0;
+      setDrDrift(0.0);
+      setCurrentVehiclePos(newPos);
+
+      if (currentLocation.bearing !== null) {
+        gnssTrackHeadingRef.current = currentLocation.bearing;
+      }
+
+      recordSessionPoint({
+        timestamp: currentLocation.timestamp || Date.now(),
+        lat: currentLocation.latitude,
+        lng: currentLocation.longitude,
+        accuracyMeters: currentLocation.accuracy || undefined,
+        speedKmH: currentLocation.speed || telemetry.speed,
+        headingDeg: currentLocation.bearing || liveHeading,
+        altitudeMeters: currentLocation.altitude || undefined,
+        isDeadReckoning: false,
+      });
+
+      if (routeState.routeCoordinates && routeState.routeCoordinates.length > 0) {
+        const { remainingDistanceKm } = calculateRemainingRoadDistance(
+          newPos,
+          routeState.routeCoordinates
+        );
+        setRemainingKm(remainingDistanceKm);
+      } else if (routeState.destCoords) {
+        const dist = DeadReckoningEngine.calculateHaversineDistance(newPos, routeState.destCoords);
+        setRemainingKm(Math.round(dist * 10) / 10);
+      }
+    }
+  }, [currentLocation, recordSessionPoint, routeState.destCoords, routeState.routeCoordinates, liveHeading, telemetry.speed]);
+
   // 1. Hardware Sensor Listeners for Compass & Gyroscope Fusion
   useEffect(() => {
-    const unsubOrientation = OrientationService.subscribeOrientationEvents((heading) => {
-      magnetometerHeadingRef.current = heading;
-    });
-
-    const unsubMotion = SensorService.subscribeMotion((data) => {
-      gyroZRateRef.current = data.az ? (data.az - 9.8) * 5 : 0;
-    });
-
-    return () => {
-      unsubOrientation();
-      unsubMotion();
-    };
-  }, []);
+    if (realSensors.headingDeg !== null) {
+      magnetometerHeadingRef.current = realSensors.headingDeg;
+    }
+    if (realSensors.gz !== null) {
+      gyroZRateRef.current = realSensors.gz;
+    }
+  }, [realSensors.headingDeg, realSensors.gz]);
 
   // 2. Shortest-Path Angular Fusion & 10 Hz Ticker
   useEffect(() => {
@@ -371,68 +406,6 @@ export const NavigationHudPage: React.FC = () => {
     return () => clearInterval(intervalId);
   }, [telemetry.speed, telemetry.ax, telemetry.ay, isGnssLocked, routeState.destCoords, routeState.routeCoordinates, recordSessionPoint]);
 
-  // 3. Real Hardware GPS Tracking Mode (`navigator.geolocation.watchPosition`)
-  useEffect(() => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) return;
-
-    const watchId = navigator.geolocation.watchPosition(
-      (position) => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-        const newPos: [number, number] = [lat, lng];
-
-        lastGnssFixTimeRef.current = Date.now();
-        setIsGnssLocked(true);
-        accumulatedDriftRef.current = 0; // Reset drift on GPS fix
-        setDrDrift(0.0);
-
-        setCurrentVehiclePos(newPos);
-
-        if (position.coords.heading != null && !isNaN(position.coords.heading)) {
-          gnssTrackHeadingRef.current = position.coords.heading;
-        }
-
-        const speedKmH = position.coords.speed != null ? position.coords.speed * 3.6 : telemetry.speed;
-
-        // Record real GPS point into session history
-        recordSessionPoint({
-          timestamp: position.timestamp || Date.now(),
-          lat,
-          lng,
-          accuracyMeters: position.coords.accuracy,
-          speedKmH,
-          headingDeg: position.coords.heading || liveHeading,
-          altitudeMeters: position.coords.altitude,
-          isDeadReckoning: false,
-        });
-
-        if (routeState.routeCoordinates && routeState.routeCoordinates.length > 0) {
-          const { remainingDistanceKm } = calculateRemainingRoadDistance(
-            newPos,
-            routeState.routeCoordinates
-          );
-          setRemainingKm(remainingDistanceKm);
-        } else if (routeState.destCoords) {
-          const dist = DeadReckoningEngine.calculateHaversineDistance(newPos, routeState.destCoords);
-          setRemainingKm(Math.round(dist * 10) / 10);
-        }
-      },
-      (error) => {
-        console.warn('Real GPS watch error / loss:', error.message);
-        setIsGnssLocked(false);
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 8000,
-      }
-    );
-
-    return () => {
-      navigator.geolocation.clearWatch(watchId);
-    };
-  }, [routeState.destCoords, routeState.routeCoordinates, liveHeading, telemetry.speed, recordSessionPoint]);
-
   const handleEndNavigation = () => {
     stopTrackingSession();
     navigate('/summary');
@@ -500,6 +473,7 @@ export const NavigationHudPage: React.FC = () => {
             rawInsPath={[]}
             liveVehiclePos={currentVehiclePos}
             liveHeading={liveHeading}
+            vehicleType={routeState.vehicleType || 'car'}
             cameraMode={cameraMode}
             onToggleCameraMode={() =>
               setCameraMode((prev) => (prev === 'north-up' ? 'head-up' : 'north-up'))

@@ -1,5 +1,7 @@
 import { MAP_CONFIG } from '../config/mapConfig';
 import { DeadReckoningEngine } from './deadReckoningEngine';
+import { RouteService } from './routeService';
+import type { RouteOption, RouteStep, VehicleType, CurrentLocationData } from '../types/navigation';
 
 export interface SearchResult {
   display_name: string;
@@ -13,10 +15,13 @@ export interface SearchResult {
 export interface CurrentLocationResult {
   lat: number;
   lng: number;
+  accuracy: number | null;
+  altitude: number | null;
+  speed: number | null;
+  heading: number | null;
+  timestamp: number;
   address: string;
 }
-
-import type { RouteOption, RouteStep } from '../types/navigation';
 
 export interface RouteResult {
   coordinates: [number, number][];
@@ -38,10 +43,14 @@ export interface MultiRouteResult {
 const lruSearchCache = new Map<string, SearchResult[]>();
 const MAX_LRU_SIZE = 50;
 
+// Reverse Geocode Cache keyed by ~50m spatial hash: "lat_3dec_lng_3dec"
+const reverseGeocodeCache = new Map<string, string>();
+const MAX_GEOCODE_CACHE = 100;
+
 // Debounce timer handle for Nominatim API calls
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-// Offline POI Database Fallback (Scenarios 3 & 4 - Pure Offline Modes)
+// Offline POI Database Fallback for offline search only
 const OFFLINE_POI_DATABASE: SearchResult[] = [
   {
     display_name: 'Chhatrapati Shivaji Maharaj International Airport (BOM), Mumbai',
@@ -95,6 +104,22 @@ const OFFLINE_POI_DATABASE: SearchResult[] = [
 
 export const LocationService = {
   /**
+   * Validate latitude and longitude coordinate integrity
+   */
+  isValidCoordinate(lat: number, lng: number): boolean {
+    return (
+      typeof lat === 'number' &&
+      typeof lng === 'number' &&
+      isFinite(lat) &&
+      isFinite(lng) &&
+      lat >= -90 &&
+      lat <= 90 &&
+      lng >= -180 &&
+      lng <= 180
+    );
+  },
+
+  /**
    * Acquire live current GPS coordinates via HTML5 Geolocation API with high accuracy
    * and reverse geocode to a human-readable street/city name.
    */
@@ -108,22 +133,37 @@ export const LocationService = {
         async (position) => {
           const lat = position.coords.latitude;
           const lng = position.coords.longitude;
+          const accuracy = position.coords.accuracy != null ? Math.round(position.coords.accuracy * 10) / 10 : null;
+          const altitude = position.coords.altitude != null ? Math.round(position.coords.altitude * 10) / 10 : null;
+          const speed = position.coords.speed != null ? Math.round(position.coords.speed * 3.6 * 10) / 10 : null; // m/s to km/h
+          const heading = position.coords.heading != null && !isNaN(position.coords.heading) ? Math.round(position.coords.heading * 10) / 10 : null;
+          const timestamp = position.timestamp || Date.now();
+
+          if (!LocationService.isValidCoordinate(lat, lng)) {
+            reject(new Error('Invalid GPS coordinates received from device.'));
+            return;
+          }
 
           try {
             const address = await LocationService.reverseGeocode(lat, lng);
-            resolve({ lat, lng, address });
+            resolve({ lat, lng, accuracy, altitude, speed, heading, timestamp, address });
           } catch {
             resolve({
               lat,
               lng,
-              address: `GPS Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`,
+              accuracy,
+              altitude,
+              speed,
+              heading,
+              timestamp,
+              address: `GPS Location (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
             });
           }
         },
         (error) => {
           let message = 'Failed to acquire GPS location.';
           if (error.code === error.PERMISSION_DENIED) {
-            message = 'Location permission denied by user.';
+            message = 'Location permission denied. Please enable GPS permissions.';
           } else if (error.code === error.POSITION_UNAVAILABLE) {
             message = 'GPS location unavailable.';
           } else if (error.code === error.TIMEOUT) {
@@ -133,11 +173,93 @@ export const LocationService = {
         },
         {
           enableHighAccuracy: true,
-          timeout: 10000,
+          timeout: 12000,
           maximumAge: 0,
         }
       );
     });
+  },
+
+  /**
+   * Continuous Location Watcher with timestamp & coordinate verification.
+   */
+  startLocationWatch(
+    onLocation: (loc: CurrentLocationData) => void,
+    onError: (err: Error) => void
+  ): () => void {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      onError(new Error('Geolocation is not supported in this browser.'));
+      return () => {};
+    }
+
+    let lastAcceptedTimestamp = 0;
+
+    const watchId = navigator.geolocation.watchPosition(
+      async (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        const ts = position.timestamp || Date.now();
+
+        // 1. Strict coordinate bounds validation
+        if (!LocationService.isValidCoordinate(lat, lng)) {
+          console.warn('Rejected invalid GPS coordinate:', lat, lng);
+          return;
+        }
+
+        // 2. Strict chronological order check (never accept older cached event as newer)
+        if (ts < lastAcceptedTimestamp) {
+          return;
+        }
+        lastAcceptedTimestamp = ts;
+
+        const accuracy = position.coords.accuracy != null ? Math.round(position.coords.accuracy * 10) / 10 : null;
+        const altitude = position.coords.altitude != null ? Math.round(position.coords.altitude * 10) / 10 : null;
+        const speed = position.coords.speed != null ? Math.round(position.coords.speed * 3.6 * 10) / 10 : null;
+        const bearing = position.coords.heading != null && !isNaN(position.coords.heading) ? Math.round(position.coords.heading * 10) / 10 : null;
+
+        // 3. Reverse geocode asynchronously
+        let address = `GPS (${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+        try {
+          address = await LocationService.reverseGeocode(lat, lng);
+        } catch {
+          // Fallback to coordinates
+        }
+
+        onLocation({
+          latitude: lat,
+          longitude: lng,
+          accuracy,
+          altitude,
+          speed,
+          bearing,
+          timestamp: ts,
+          address,
+          source: 'gps',
+          isStale: false,
+          ageSec: 0,
+        });
+      },
+      (error) => {
+        let msg = 'GPS watch error';
+        if (error.code === error.PERMISSION_DENIED) {
+          msg = 'Location permission denied by user.';
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          msg = 'GPS signal unavailable.';
+        } else if (error.code === error.TIMEOUT) {
+          msg = 'GPS request timed out.';
+        }
+        onError(new Error(msg));
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
   },
 
   /**
@@ -154,7 +276,6 @@ export const LocationService = {
     // 1. Check In-Memory LRU Cache first
     if (lruSearchCache.has(cleanQuery)) {
       const cached = lruSearchCache.get(cleanQuery)!;
-      // Refresh key order in LRU cache
       lruSearchCache.delete(cleanQuery);
       lruSearchCache.set(cleanQuery, cached);
       return cached;
@@ -215,7 +336,7 @@ export const LocationService = {
   },
 
   /**
-   * Search local offline POI database for offline scenarios (Scenarios 3 & 4)
+   * Search local offline POI database for offline keyword search
    */
   searchOfflinePoiDatabase(cleanQuery: string): SearchResult[] {
     return OFFLINE_POI_DATABASE.filter((poi) =>
@@ -225,11 +346,21 @@ export const LocationService = {
 
   /**
    * Reverse-geocode latitude/longitude coordinates to a street/city address string.
+   * Spatial cache precision ~50m (3 decimal places).
    */
   async reverseGeocode(lat: number, lng: number): Promise<string> {
+    if (!LocationService.isValidCoordinate(lat, lng)) {
+      return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    }
+
+    const key = `${lat.toFixed(3)}_${lng.toFixed(3)}`;
+    if (reverseGeocodeCache.has(key)) {
+      return reverseGeocodeCache.get(key)!;
+    }
+
     const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
     if (!isOnline) {
-      return `Offline Coordinate (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+      return `Offline Coordinate (${lat.toFixed(5)}, ${lng.toFixed(5)})`;
     }
 
     try {
@@ -246,170 +377,42 @@ export const LocationService = {
 
       const data = await response.json();
       if (data && data.display_name) {
+        if (reverseGeocodeCache.size >= MAX_GEOCODE_CACHE) {
+          const first = reverseGeocodeCache.keys().next().value;
+          if (first) reverseGeocodeCache.delete(first);
+        }
+        reverseGeocodeCache.set(key, data.display_name);
         return data.display_name;
       }
-      return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
     } catch (err) {
       console.warn('Reverse geocode fallback:', err);
-      return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
     }
   },
 
   /**
    * Calculate dynamic drivable road routes, alternatives, distance (km), ETA (min), and steps using OSRM API.
-   * Requests real route alternatives using OSRM `alternatives=true&steps=true`.
-   * Strictly avoids fabricating fake routes or drawing straight-line road routes.
    */
   async calculateRoute(
     start: [number, number],
     dest: [number, number],
+    vehicleType: VehicleType = 'car',
     signal?: AbortSignal
   ): Promise<MultiRouteResult> {
-    const [startLat, startLng] = start;
-    const [destLat, destLng] = dest;
-
-    // 1. Strict Coordinate Validation
-    if (
-      !isFinite(startLat) ||
-      !isFinite(startLng) ||
-      !isFinite(destLat) ||
-      !isFinite(destLng) ||
-      startLat < -90 ||
-      startLat > 90 ||
-      destLat < -90 ||
-      destLat > 90 ||
-      startLng < -180 ||
-      startLng > 180 ||
-      destLng < -180 ||
-      destLng > 180
-    ) {
-      throw new Error('Invalid coordinate range provided for road routing.');
-    }
+    const norm = await RouteService.calculateRoute({
+      origin: start,
+      destination: dest,
+      vehicleProfile: vehicleType,
+      alternatives: true,
+      signal,
+    });
 
     const straightDist = DeadReckoningEngine.calculateHaversineDistance(start, dest);
-    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
-
-    if (!isOnline) {
-      throw new Error(
-        `Road route unavailable while offline. (Straight-line distance: ${straightDist.toFixed(1)} km)`
-      );
-    }
-
-    // 2. Format URL with correct Longitude,Latitude order (OSRM standard)
-    const url = `${MAP_CONFIG.OSRM_BASE_URL}/route/v1/driving/${startLng},${startLat};${destLng},${destLat}?overview=full&geometries=geojson&alternatives=true&steps=true`;
-
-    let response: Response;
-    try {
-      response = await fetch(url, { signal });
-    } catch (fetchErr: any) {
-      if (fetchErr.name === 'AbortError') {
-        throw fetchErr;
-      }
-      throw new Error(
-        `Routing service connection error. Please check your internet connection. (Straight-line distance: ${straightDist.toFixed(1)} km)`
-      );
-    }
-
-    let data: any = null;
-    try {
-      data = await response.json();
-    } catch {
-      // Non-JSON response
-    }
-
-    // 3. Graceful OSRM Response & Error Code Translation
-    if (!response.ok || !data || data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
-      if (response.status === 429) {
-        throw new Error('Routing service is temporarily busy. Please wait a moment and try again.');
-      }
-      if (response.status >= 500) {
-        throw new Error('Routing service is temporarily unavailable. Please try again later.');
-      }
-
-      const osrmCode = data?.code;
-      if (
-        osrmCode === 'NoRoute' ||
-        osrmCode === 'ImpossibleRoute' ||
-        response.status === 400 ||
-        response.status === 404
-      ) {
-        throw new Error(
-          `No continuous road route found between locations (e.g. water barrier or broad island territory). Straight-line distance: ${straightDist.toFixed(1)} km.`
-        );
-      }
-
-      if (osrmCode === 'InvalidQuery' || osrmCode === 'InvalidValue') {
-        throw new Error(
-          `Please select a more specific road-accessible destination. (Straight-line distance: ${straightDist.toFixed(1)} km)`
-        );
-      }
-
-      throw new Error(
-        `Road route unavailable: ${data?.message || 'No continuous driving route was found'}. (Straight-line distance: ${straightDist.toFixed(1)} km)`
-      );
-    }
-
-    const rawRoutes = data.routes as any[];
-    let minDuration = Infinity;
-    let minDistance = Infinity;
-
-    rawRoutes.forEach((r) => {
-      if (r.duration < minDuration) minDuration = r.duration;
-      if (r.distance < minDistance) minDistance = r.distance;
-    });
-
-    const parsedRoutes: RouteOption[] = rawRoutes.map((r, idx) => {
-      const rawCoords: [number, number][] = r.geometry.coordinates;
-      // Coordinate Safety Invariant: Convert OSRM GeoJSON format [lng, lat] to Leaflet format [lat, lng]
-      const coordinates: [number, number][] = rawCoords.map(([lng, lat]) => [lat, lng]);
-      const distanceKm = Math.round((r.distance / 1000) * 10) / 10;
-      const durationMin = Math.max(1, Math.round(r.duration / 60));
-
-      // Parse turn-by-turn steps
-      const steps: RouteStep[] = (r.legs?.[0]?.steps || []).map((step: any) => {
-        const type = step.maneuver?.type || 'turn';
-        const modifier = step.maneuver?.modifier;
-        const name = step.name || (step.ref ? `Ref ${step.ref}` : 'Unnamed Road');
-        const distM = Math.round(step.distance);
-        const durS = Math.round(step.duration);
-
-        return {
-          maneuverType: type,
-          modifier,
-          name,
-          distanceMeters: distM,
-          durationSec: durS,
-          instruction: LocationService.formatStepInstruction(step),
-        };
-      });
-
-      // Determine dynamic, mathematically honest route label
-      let label: 'Recommended' | 'Fastest' | 'Shortest' | 'Alternative' = 'Alternative';
-      if (idx === 0) {
-        label = 'Recommended';
-      } else if (r.duration <= minDuration) {
-        label = 'Fastest';
-      } else if (r.distance <= minDistance) {
-        label = 'Shortest';
-      }
-
-      const summary = r.legs?.[0]?.summary || `Via ${steps[1]?.name || steps[0]?.name || 'Road Network'}`;
-
-      return {
-        id: `osrm-route-${idx}`,
-        index: idx,
-        coordinates,
-        distanceKm,
-        durationMin,
-        label,
-        summary,
-        steps,
-      };
-    });
 
     return {
-      routes: parsedRoutes,
-      selectedRoute: parsedRoutes[0],
+      routes: norm.routes,
+      selectedRoute: norm.selectedRoute,
       isFallback: false,
       straightLineDistanceKm: Math.round(straightDist * 10) / 10,
     };
