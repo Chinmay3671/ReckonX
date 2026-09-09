@@ -3,12 +3,14 @@ export interface MotionData {
   ay: number;
   az: number;
   interval: number;
+  timestamp: number;
 }
 
 export interface OrientationData {
   alpha: number | null; // Yaw (0-360)
   beta: number | null;  // Pitch (-180 to 180)
   gamma: number | null; // Roll (-90 to 90)
+  timestamp: number;
 }
 
 export const SensorService = {
@@ -52,7 +54,7 @@ export const SensorService = {
         return false;
       }
     }
-    return true; // Non-iOS browsers do not require explicit permission call
+    return true; // Non-iOS browsers that support the API
   },
 
   /**
@@ -85,12 +87,13 @@ export const SensorService = {
 
     const handler = (event: DeviceMotionEvent) => {
       const accel = event.accelerationIncludingGravity || event.acceleration;
-      if (accel) {
+      if (accel && (accel.x !== null || accel.y !== null || accel.z !== null)) {
         onData({
           ax: Math.round((accel.x || 0) * 100) / 100,
           ay: Math.round((accel.y || 0) * 100) / 100,
-          az: Math.round((accel.z || 9.8) * 100) / 100,
+          az: Math.round((accel.z || 0) * 100) / 100,
           interval: event.interval || 16,
+          timestamp: Date.now(),
         });
       }
     };
@@ -106,11 +109,14 @@ export const SensorService = {
     if (!SensorService.hasOrientationSupport()) return () => {};
 
     const handler = (event: DeviceOrientationEvent) => {
-      onData({
-        alpha: event.alpha != null ? Math.round(event.alpha) : null,
-        beta: event.beta != null ? Math.round(event.beta) : null,
-        gamma: event.gamma != null ? Math.round(event.gamma) : null,
-      });
+      if (event.alpha !== null || event.beta !== null || event.gamma !== null) {
+        onData({
+          alpha: event.alpha != null ? Math.round(event.alpha * 10) / 10 : null,
+          beta: event.beta != null ? Math.round(event.beta * 10) / 10 : null,
+          gamma: event.gamma != null ? Math.round(event.gamma * 10) / 10 : null,
+          timestamp: Date.now(),
+        });
+      }
     };
 
     window.addEventListener('deviceorientation', handler, true);

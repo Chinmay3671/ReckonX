@@ -6,15 +6,6 @@ export interface DRPositionEstimate {
   isZuptActive?: boolean;
 }
 
-export interface SyntheticIMUData {
-  ax: number;
-  ay: number;
-  az: number;
-  gx: number;
-  gy: number;
-  gz: number;
-}
-
 // Internal ZUPT (Zero Velocity Update) stationary timer accumulator
 let zuptStationaryDurationSec = 0;
 
@@ -36,7 +27,7 @@ export const DeadReckoningEngine = {
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
       Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return Math.round(R * c * 10) / 10;
+    return Math.round(R * c * 100) / 100;
   },
 
   /**
@@ -81,25 +72,10 @@ export const DeadReckoningEngine = {
   },
 
   /**
-   * Generate synthetic desktop IMU sensor data when running on PC without physical sensors
+   * Reset ZUPT accumulator
    */
-  generateSyntheticDesktopIMU(speedKmH: number): SyntheticIMUData {
-    const noiseX = (Math.random() - 0.5) * 0.03;
-    const noiseY = (Math.random() - 0.5) * 0.03;
-    const noiseZ = (Math.random() - 0.5) * 0.02;
-
-    const baseAccelX = speedKmH > 2 ? 0.15 + noiseX : noiseX;
-    const baseAccelY = noiseY;
-    const baseAccelZ = 9.80 + noiseZ;
-
-    return {
-      ax: Math.round(baseAccelX * 100) / 100,
-      ay: Math.round(baseAccelY * 100) / 100,
-      az: Math.round(baseAccelZ * 100) / 100,
-      gx: Math.round((Math.random() - 0.5) * 0.5 * 10) / 10,
-      gy: Math.round((Math.random() - 0.5) * 0.5 * 10) / 10,
-      gz: Math.round((Math.random() - 0.5) * 1.0 * 10) / 10,
-    };
+  resetZupt(): void {
+    zuptStationaryDurationSec = 0;
   },
 
   /**
@@ -127,7 +103,7 @@ export const DeadReckoningEngine = {
     // Convert bearing to radians
     const headingRad = (headingDeg * Math.PI) / 180;
 
-    // Convert meter offset to lat/lng degrees (approximate for local navigation)
+    // Convert meter offset to lat/lng degrees (WGS84 spherical approximation for local step)
     const deltaLat = (distMeters * Math.cos(headingRad)) / 111111;
     const deltaLng =
       (distMeters * Math.sin(headingRad)) /

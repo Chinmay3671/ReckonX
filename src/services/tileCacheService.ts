@@ -33,13 +33,15 @@ async function getDB(): Promise<IDBDatabase> {
 
 /**
  * Generate a clean 256x256 SVG Canvas Data URL placeholder tile for offline tile cache misses.
+ * Clearly states 'Map tile unavailable offline' as required.
  */
-function createPlaceholderTileDataUrl(): string {
+function createUnavailableTileDataUrl(): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-    <rect width="256" height="256" fill="#F8FAFC"/>
+    <rect width="256" height="256" fill="#F1F5F9"/>
     <path d="M0 64h256M0 128h256M0 192h256M64 0v256M128 0v256M192 0v256" stroke="#E2E8F0" stroke-width="1"/>
-    <rect x="68" y="108" width="120" height="40" rx="6" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
-    <text x="128" y="128" font-family="sans-serif" font-size="10" font-weight="bold" fill="#64748B" text-anchor="middle" dominant-baseline="central">OFFLINE TILE MISS</text>
+    <rect x="28" y="104" width="200" height="48" rx="6" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="128" y="122" font-family="sans-serif" font-size="10" font-weight="bold" fill="#475569" text-anchor="middle">OFFLINE</text>
+    <text x="128" y="136" font-family="sans-serif" font-size="9" fill="#94A3B8" text-anchor="middle">Map tile unavailable offline</text>
   </svg>`;
 
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
@@ -62,7 +64,7 @@ export const TileCacheService = {
 
   /**
    * Fetch a map tile (data URL) from IndexedDB tile cache.
-   * If missing and network is offline, returns clean SVG placeholder URL instead of null/error.
+   * If missing and network is offline, returns explicit unavailable tile placeholder.
    */
   async getTile(url: string): Promise<string | null> {
     try {
@@ -85,10 +87,10 @@ export const TileCacheService = {
 
       if (cached) return cached;
 
-      // If offline and cache missed, serve clean SVG placeholder tile
+      // If offline and cache missed, return explicit unavailable placeholder
       const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
       if (!isOnline) {
-        return createPlaceholderTileDataUrl();
+        return createUnavailableTileDataUrl();
       }
 
       return null;
@@ -131,9 +133,9 @@ export const TileCacheService = {
   },
 
   /**
-   * Get SVG placeholder data URL directly
+   * Get placeholder tile data URL directly
    */
   getPlaceholderTile(): string {
-    return createPlaceholderTileDataUrl();
+    return createUnavailableTileDataUrl();
   },
 };

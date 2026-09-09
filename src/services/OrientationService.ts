@@ -75,10 +75,14 @@ export const OrientationService = {
   },
 
   /**
-   * Format numerical heading in degrees into string with cardinal direction
+   * Format numerical heading in degrees into string with cardinal direction.
+   * If orientation data is unavailable, returns honest placeholder.
    * Example: 127.4 -> "127° SE", 0 -> "0° N", 225 -> "225° SW"
    */
-  formatCardinalHeading(headingDeg: number): string {
+  formatCardinalHeading(headingDeg: number, isAvailable: boolean = true): string {
+    if (!isAvailable) {
+      return '--';
+    }
     const norm = Math.round(OrientationService.normalizeAngle(headingDeg));
     const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
     const index = Math.round(norm / 45) % 8;
